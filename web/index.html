@@ -79,7 +79,7 @@
     <h1 style="margin:0">☀️ AI Digest Dashboard</h1>
     <div class="auth-bar" id="authBar"></div>
   </div>
-  <p class="subtitle"><span id="subtitleText">Kevin's AI news digest — powered by Lisa</span> · <a href="https://github.com/kevinho/ai-digest" target="_blank" style="color:#58a6ff;text-decoration:none;">GitHub ⭐</a> · <span id="langToggle" style="color:#58a6ff;cursor:pointer;padding:2px 6px;border:1px solid #333;border-radius:4px;font-size:12px;">EN</span></p>
+  <p class="subtitle"><span id="subtitleText">Kevin's AI news digest — powered by Lisa</span></p>
   <div class="tabs">
     <div class="tab active" data-type="4h">4H 简报</div>
     <div class="tab" data-type="daily">日报</div>
@@ -174,9 +174,8 @@ function applyLang() {
   document.querySelector('[data-type="marks"]').textContent = t('tabMarks');
   const banner = document.getElementById('loginBanner');
   if (banner) banner.querySelector('span').textContent = t('loginBanner');
-  const langToggle = document.getElementById('langToggle');
-  if (langToggle) langToggle.textContent = lang === 'zh' ? 'EN' : '中文';
   renderAuthBar();
+  bindLangToggle();
 }
 
 // API base — auto-detect: if served under /digest/, use /digest/api; otherwise /api
@@ -200,14 +199,21 @@ async function checkAuth() {
   if (currentUser && currentType === 'marks') renderMarks();
 }
 
+function ghLangHtml() {
+  return `<a href="https://github.com/kevinho/ai-digest" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:13px;">GitHub ⭐</a>`
+    + `<span id="langToggle" style="color:#58a6ff;cursor:pointer;padding:2px 6px;border:1px solid #333;border-radius:4px;font-size:12px;">${lang === 'zh' ? 'EN' : '中文'}</span>`;
+}
+
 function renderAuthBar() {
   const bar = document.getElementById('authBar');
   if (currentUser) {
     bar.innerHTML = `<img src="${currentUser.avatar}" alt="">`
       + `<span class="user-name">${currentUser.name}</span>`
-      + `<a class="auth-btn" href="#" onclick="doLogout(); return false;">${t('logout')}</a>`;
+      + `<a class="auth-btn" href="#" onclick="doLogout(); return false;">${t('logout')}</a>`
+      + ghLangHtml();
   } else {
-    bar.innerHTML = `<a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}">${t('signIn')}</a>`;
+    bar.innerHTML = `<a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}">${t('signIn')}</a>`
+      + ghLangHtml();
   }
 }
 
@@ -603,11 +609,14 @@ if (location.hash) {
   }
 }
 
-document.getElementById('langToggle').addEventListener('click', function(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  setLang(lang === 'zh' ? 'en' : 'zh');
-});
+function bindLangToggle() {
+  const el = document.getElementById('langToggle');
+  if (el) el.addEventListener('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    setLang(lang === 'zh' ? 'en' : 'zh');
+  });
+}
 applyLang();
 checkAuth().then(() => renderList());
 </script>

@@ -780,19 +780,21 @@ async function renderSources() {
     const resp = await fetch(`${API}/sources`, { credentials: 'same-origin' });
     const sources = await resp.json();
     const isLoggedIn = !!currentUser;
-    const active = sources.filter(s => s.is_active);
-    const types = [...new Set(sources.map(s => s.type))];
+    const mySources = isLoggedIn ? sources.filter(s => s.created_by === currentUser.id) : [];
+    const publicSources = isLoggedIn ? sources.filter(s => s.created_by !== currentUser.id) : sources;
+    const active = mySources.filter(s => s.is_active);
 
-    // ── Section 1: Sources header ──
-    const headerTitle = isLoggedIn
-      ? `📡 ${lang==='zh'?'我的信息源':'My Sources'} <span style="font-size:13px;color:#666;font-weight:400;">${active.length}/${sources.length} ${lang==='zh'?'活跃':'active'}</span>`
-      : `📡 ${lang==='zh'?'信息源':'Sources'} <span style="font-size:13px;color:#666;font-weight:400;">${sources.length} ${lang==='zh'?'个公开源':'public sources'}</span>`;
-    let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      <h2 style="margin:0;font-size:16px;color:#e0e0e0;">${headerTitle}</h2>
-    </div>`;
-
-    if (!isLoggedIn && sources.length) {
-      html += `<div style="font-size:12px;color:#555;margin-bottom:16px;">${lang==='zh'?'以下是为本站 Digest 提供内容的信息源':'These are the sources powering this digest'}</div>`;
+    // ── Section 1: My Sources (logged in) or Public Sources (not logged in) ──
+    let html = '';
+    if (isLoggedIn) {
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h2 style="margin:0;font-size:16px;color:#e0e0e0;">📡 ${lang==='zh'?'我的信息源':'My Sources'} <span style="font-size:13px;color:#666;font-weight:400;">${active.length}/${mySources.length} ${lang==='zh'?'活跃':'active'}</span></h2>
+      </div>`;
+    } else {
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h2 style="margin:0;font-size:16px;color:#e0e0e0;">📡 ${lang==='zh'?'信息源':'Sources'} <span style="font-size:13px;color:#666;font-weight:400;">${publicSources.length} ${lang==='zh'?'个公开源':'public sources'}</span></h2>
+      </div>`;
+      if (publicSources.length) html += `<div style="font-size:12px;color:#555;margin-bottom:16px;">${lang==='zh'?'以下是为本站 Digest 提供内容的信息源':'These are the sources powering this digest'}</div>`;
     }
 
     // ── Add source (inline, compact) ──
@@ -802,7 +804,8 @@ async function renderSources() {
     }
 
     // ── Source list ──
-    if (!sources.length) {
+    const displaySources = isLoggedIn ? mySources : publicSources;
+    if (!displaySources.length) {
       // Empty state onboarding — smart add + packs integrated
       html += `<div style="text-align:center;padding:40px 20px;">
         <div style="font-size:28px;margin-bottom:12px;">📡</div>
@@ -852,7 +855,7 @@ async function renderSources() {
       return;
     } else {
       html += '<div class="digest-list" style="gap:8px;">';
-      for (const s of sources) {
+      for (const s of displaySources) {
         const icon = SOURCE_ICONS[s.type] || '📦';
         const lastFetch = s.last_fetched_at ? s.last_fetched_at.slice(0, 16).replace('T', ' ') : t('never');
         html += `<div class="source-card" style="padding:12px 16px;">
@@ -871,6 +874,25 @@ async function renderSources() {
         </div>`;
       }
       html += '</div>';
+    }
+
+    // ── Public sources for logged-in users ──
+    if (isLoggedIn && publicSources.length) {
+      html += `<div style="border-top:1px solid #222;margin-top:20px;padding-top:16px;">
+        <h2 style="margin:0 0 12px;font-size:14px;color:#888;">🌐 ${lang==='zh'?'公开信息源':'Public Sources'} <span style="font-size:12px;color:#555;">${publicSources.length}</span></h2>
+        <div class="digest-list" style="gap:8px;">`;
+      for (const s of publicSources) {
+        const icon = SOURCE_ICONS[s.type] || '📦';
+        html += `<div class="source-card" style="padding:10px 16px;opacity:0.7;">
+          <div class="source-header">
+            <span class="source-name" style="font-size:13px;">${icon} ${s.name} <span style="font-size:11px;color:#555;">by ${s.creator_name || '?'}</span></span>
+          </div>
+          <div class="source-meta" style="font-size:11px;">
+            <span style="background:#1a1a2e;padding:1px 6px;border-radius:3px;color:#6cf;">${s.type}</span>
+          </div>
+        </div>`;
+      }
+      html += '</div></div>';
     }
 
     // ── Section 2: Packs (separated) ──

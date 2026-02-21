@@ -220,7 +220,7 @@ export function countDigestsByUser(db, userId, { type } = {}) {
 // ── Sources ──
 
 export function listSources(db, { activeOnly, userId, includePublic } = {}) {
-  let sql = 'SELECT * FROM sources';
+  let sql = 'SELECT sources.*, users.name as creator_name FROM sources LEFT JOIN users ON sources.created_by = users.id';
   const conditions = [];
   const params = [];
   if (activeOnly) { conditions.push('is_active = 1'); }

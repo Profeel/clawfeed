@@ -513,6 +513,14 @@ const server = createServer(async (req, res) => {
 
     // ── Config endpoints ──
 
+    // GET /api/changelog
+    if (req.method === 'GET' && path === '/api/changelog') {
+      try {
+        const changelog = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf-8');
+        return json(res, { content: changelog });
+      } catch { return json(res, { content: '# Changelog\n\nNo changelog found.' }); }
+    }
+
     if (req.method === 'GET' && path === '/api/config') {
       return json(res, getConfig(db));
     }

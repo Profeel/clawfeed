@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
-import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource } from './db.mjs';
+import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getUserBySlug, listDigestsByUser, countDigestsByUser } from './db.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -108,10 +108,18 @@ function attachUser(req) {
   if (cookies.session) {
     const sess = getSession(db, cookies.session);
     if (sess) {
-      req.user = { id: sess.uid, email: sess.email, name: sess.name, avatar: sess.avatar };
+      req.user = { id: sess.uid, email: sess.email, name: sess.name, avatar: sess.avatar, slug: sess.slug };
       req.sessionId = cookies.session;
     }
   }
+}
+
+function _digestTitle(d, ca) {
+  const dt = new Date(ca.includes('+') ? ca : ca.replace(' ', 'T') + '+08:00');
+  const timeStr = dt.toLocaleString('en-SG', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
+  const labels = { '4h': 'AI 简报', daily: 'AI 日报', weekly: 'AI 周报', monthly: 'AI 月报' };
+  return `${icons[d.type] || '📝'} ${labels[d.type] || 'AI Digest'} | ${timeStr} SGT`;
 }
 
 const server = createServer(async (req, res) => {
@@ -121,6 +129,71 @@ const server = createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   let { path, params } = parseUrl(req.url);
+
+  // ── Feed endpoints (public, before auth) ──
+  const feedMatch = path.match(/^\/feed\/([a-z0-9_-]+?)(?:\.(json|rss))?$/);
+  if (req.method === 'GET' && feedMatch) {
+    const slug = feedMatch[1];
+    const format = feedMatch[2] || 'api'; // 'json', 'rss', or 'api'
+    const user = getUserBySlug(db, slug);
+    if (!user) return json(res, { error: 'user not found' }, 404);
+
+    const type = params.get('type') || '4h';
+    const limit = Math.min(parseInt(params.get('limit') || '10'), 50);
+    const since = params.get('since') || undefined;
+    const digests = listDigestsByUser(db, user.id, { type, limit, since });
+    const total = countDigestsByUser(db, user.id, { type });
+    const BASE = 'https://digest.kevinhe.io';
+
+    if (format === 'json') {
+      // JSON Feed 1.1
+      const feed = {
+        version: 'https://jsonfeed.org/version/1.1',
+        title: `${user.name}'s AI Digest`,
+        home_page_url: BASE,
+        feed_url: `${BASE}/feed/${slug}.json`,
+        items: digests.map(d => {
+          const ca = d.created_at;
+          const dt = ca.includes('+') ? ca : ca.replace(' ', 'T') + '+08:00';
+          const title = _digestTitle(d, ca);
+          return {
+            id: String(d.id),
+            title,
+            content_text: d.content,
+            date_published: dt,
+            url: `${BASE}/#digest-${d.id}`
+          };
+        })
+      };
+      res.writeHead(200, { 'Content-Type': 'application/feed+json; charset=utf-8' });
+      res.end(JSON.stringify(feed));
+      return;
+    }
+
+    if (format === 'rss') {
+      // RSS 2.0
+      const escXml = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      let items = '';
+      for (const d of digests) {
+        const ca = d.created_at;
+        const dt = new Date(ca.includes('+') ? ca : ca.replace(' ', 'T') + '+08:00');
+        const title = _digestTitle(d, ca);
+        items += `<item><title>${escXml(title)}</title><link>${BASE}/#digest-${d.id}</link><guid isPermaLink="false">${d.id}</guid><pubDate>${dt.toUTCString()}</pubDate><description>${escXml(d.content.slice(0, 2000))}</description></item>\n`;
+      }
+      const rss = `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel><title>${escXml(user.name)}'s AI Digest</title><link>${BASE}</link><description>AI Digest Feed</description>\n${items}</channel></rss>`;
+      res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
+      res.end(rss);
+      return;
+    }
+
+    // Simple API
+    return json(res, {
+      user: { name: user.name, slug: user.slug },
+      digests: digests.map(d => ({ id: d.id, type: d.type, content: d.content, created_at: d.created_at })),
+      total
+    });
+  }
+
   if (!path.startsWith('/api/') && path !== '/mark' && path !== '/marks') {
     path = '/api' + path;
   }

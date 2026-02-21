@@ -48,7 +48,40 @@ export function getDb(dbPath) {
   } catch (e) {
     if (!e.message.includes('already exists')) console.error('Migration 003:', e.message);
   }
+  // Run feed migration (idempotent)
+  try {
+    const sql4 = readFileSync(join(ROOT, 'migrations', '004_feed.sql'), 'utf8');
+    for (const stmt of sql4.split(';').map(s => s.trim()).filter(Boolean)) {
+      try { _db.exec(stmt + ';'); } catch (e) {
+        if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) throw e;
+      }
+    }
+  } catch (e) {
+    if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) console.error('Migration 004:', e.message);
+  }
+  // Backfill slugs for existing users
+  _backfillSlugs(_db);
   return _db;
+}
+
+function _generateSlug(email, name) {
+  const base = (email ? email.split('@')[0] : name || 'user').toLowerCase();
+  return base.replace(/[^a-z0-9_-]/g, '').slice(0, 30) || 'user';
+}
+
+function _backfillSlugs(db) {
+  const users = db.prepare('SELECT id, email, name, slug FROM users WHERE slug IS NULL').all();
+  // Special slug mappings
+  const SLUG_MAP = { 'freefacefly@gmail.com': 'kevin', 'kevin@coco.xyz': 'kevinhe' };
+  for (const u of users) {
+    let slug = SLUG_MAP[u.email] || _generateSlug(u.email, u.name);
+    let candidate = slug;
+    let i = 1;
+    while (db.prepare('SELECT 1 FROM users WHERE slug = ? AND id != ?').get(candidate, u.id)) {
+      candidate = slug + i++;
+    }
+    db.prepare('UPDATE users SET slug = ? WHERE id = ?').run(candidate, u.id);
+  }
 }
 
 // ── Digests ──
@@ -115,9 +148,25 @@ export function upsertUser(db, { googleId, email, name, avatar }) {
   const existing = db.prepare('SELECT * FROM users WHERE google_id = ?').get(googleId);
   if (existing) {
     db.prepare('UPDATE users SET email = ?, name = ?, avatar = ? WHERE google_id = ?').run(email, name, avatar, googleId);
+    // Backfill slug if missing
+    if (!existing.slug) {
+      let slug = _generateSlug(email, name);
+      let candidate = slug;
+      let i = 1;
+      while (db.prepare('SELECT 1 FROM users WHERE slug = ? AND id != ?').get(candidate, existing.id)) {
+        candidate = slug + i++;
+      }
+      db.prepare('UPDATE users SET slug = ? WHERE id = ?').run(candidate, existing.id);
+    }
     return db.prepare('SELECT * FROM users WHERE google_id = ?').get(googleId);
   }
-  db.prepare('INSERT INTO users (google_id, email, name, avatar) VALUES (?, ?, ?, ?)').run(googleId, email, name, avatar);
+  let slug = _generateSlug(email, name);
+  let candidate = slug;
+  let i = 1;
+  while (db.prepare('SELECT 1 FROM users WHERE slug = ?').get(candidate)) {
+    candidate = slug + i++;
+  }
+  db.prepare('INSERT INTO users (google_id, email, name, avatar, slug) VALUES (?, ?, ?, ?, ?)').run(googleId, email, name, avatar, candidate);
   return db.prepare('SELECT * FROM users WHERE google_id = ?').get(googleId);
 }
 
@@ -127,7 +176,7 @@ export function createSession(db, { id, userId, expiresAt }) {
 
 export function getSession(db, sessionId) {
   return db.prepare(`
-    SELECT s.*, u.id as uid, u.google_id, u.email, u.name, u.avatar
+    SELECT s.*, u.id as uid, u.google_id, u.email, u.name, u.avatar, u.slug
     FROM sessions s JOIN users u ON s.user_id = u.id
     WHERE s.id = ? AND s.expires_at > datetime('now')
   `).get(sessionId);
@@ -135,6 +184,30 @@ export function getSession(db, sessionId) {
 
 export function deleteSession(db, sessionId) {
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+}
+
+// ── Feed ──
+
+export function getUserBySlug(db, slug) {
+  return db.prepare('SELECT id, name, slug, avatar FROM users WHERE slug = ?').get(slug);
+}
+
+export function listDigestsByUser(db, userId, { type, limit = 10, since } = {}) {
+  // userId=null means system digests (user_id IS NULL), which we also show for any user feed
+  let sql = 'SELECT id, type, content, created_at FROM digests WHERE (user_id = ? OR user_id IS NULL)';
+  const params = [userId];
+  if (type) { sql += ' AND type = ?'; params.push(type); }
+  if (since) { sql += ' AND created_at >= ?'; params.push(since); }
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(Math.min(limit, 50));
+  return db.prepare(sql).all(...params);
+}
+
+export function countDigestsByUser(db, userId, { type } = {}) {
+  let sql = 'SELECT COUNT(*) as total FROM digests WHERE (user_id = ? OR user_id IS NULL)';
+  const params = [userId];
+  if (type) { sql += ' AND type = ?'; params.push(type); }
+  return db.prepare(sql).get(...params).total;
 }
 
 // ── Sources ──

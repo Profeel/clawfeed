@@ -260,6 +260,7 @@ function renderAuthBar() {
         <img src="${currentUser.avatar}" alt="">
         <span class="user-name">${currentUser.name}</span>
         <div id="userDropdown" class="user-dropdown">
+          <a href="#" onclick="event.stopPropagation();showFeedInfo();return false;">📡 My Feed</a>
           <a href="#" onclick="event.stopPropagation();doLogout();return false;">${t('logout')}</a>
         </div>
       </div>`;
@@ -618,8 +619,8 @@ function renderMarkCard(m) {
   </div>`;
 }
 
-const SOURCE_ICONS = { twitter_feed: '🐦', twitter_list: '🐦', rss: '📡', website: '🌐', hackernews: '🔶', reddit: '👽', github_trending: '⭐', custom_api: '🔌' };
-const SOURCE_TYPES = ['twitter_feed', 'twitter_list', 'rss', 'website', 'hackernews', 'reddit', 'github_trending', 'custom_api'];
+const SOURCE_ICONS = { twitter_feed: '🐦', twitter_list: '🐦', rss: '📡', website: '🌐', hackernews: '🔶', reddit: '👽', github_trending: '⭐', custom_api: '🔌', digest_feed: '📰' };
+const SOURCE_TYPES = ['twitter_feed', 'twitter_list', 'rss', 'website', 'hackernews', 'reddit', 'github_trending', 'custom_api', 'digest_feed'];
 let showSourceForm = false;
 let editingSource = null;
 
@@ -699,8 +700,42 @@ const SOURCE_EXAMPLES = {
   hackernews: { filter: "top", min_score: 100 },
   reddit: { subreddit: "MachineLearning", sort: "hot", limit: 20 },
   github_trending: { language: "python", since: "daily" },
-  custom_api: { endpoint: "https://api.example.com/feed", headers: { "Authorization": "Bearer xxx" } }
+  custom_api: { endpoint: "https://api.example.com/feed", headers: { "Authorization": "Bearer xxx" } },
+  digest_feed: { url: "https://digest.kevinhe.io/feed/kevin.json" }
 };
+
+function showFeedInfo() {
+  document.getElementById('userDropdown').classList.remove('show');
+  if (!currentUser) return;
+  // Fetch user slug from /api/auth/me (slug is included)
+  fetch(`${API}/auth/me`, { credentials: 'same-origin' }).then(r => r.json()).then(data => {
+    const slug = data.user.slug || 'unknown';
+    const base = location.origin;
+    const jsonUrl = `${base}/feed/${slug}.json`;
+    const rssUrl = `${base}/feed/${slug}.rss`;
+    const apiUrl = `${base}/feed/${slug}`;
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;';
+    modal.onclick = e => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `<div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+      <h3 style="margin:0 0 16px;font-size:16px;">📡 Your Feed</h3>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:12px;color:#888;">JSON Feed</label>
+        <div style="display:flex;gap:6px;margin-top:4px;"><input readonly value="${jsonUrl}" style="flex:1;padding:6px 10px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:12px;" onclick="this.select()"><button onclick="navigator.clipboard.writeText('${jsonUrl}');showToast('Copied!')" style="padding:6px 12px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:12px;">📋</button></div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:12px;color:#888;">RSS Feed</label>
+        <div style="display:flex;gap:6px;margin-top:4px;"><input readonly value="${rssUrl}" style="flex:1;padding:6px 10px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:12px;" onclick="this.select()"><button onclick="navigator.clipboard.writeText('${rssUrl}');showToast('Copied!')" style="padding:6px 12px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:12px;">📋</button></div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="font-size:12px;color:#888;">Simple API</label>
+        <div style="display:flex;gap:6px;margin-top:4px;"><input readonly value="${apiUrl}" style="flex:1;padding:6px 10px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:12px;" onclick="this.select()"><button onclick="navigator.clipboard.writeText('${apiUrl}');showToast('Copied!')" style="padding:6px 12px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:12px;">📋</button></div>
+      </div>
+      <div style="text-align:right;"><button onclick="this.closest('div[style*=fixed]').remove()" style="padding:8px 20px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:13px;">Close</button></div>
+    </div>`;
+    document.body.appendChild(modal);
+  });
+}
 
 function onTypeChange() {
   const sel = document.getElementById('sf_type');

@@ -183,7 +183,7 @@ const I18N = {
     noSources: '暂无数据源', confirmDelete: '确定删除此数据源？',
     lastFetched: '上次抓取', fetchCount: '抓取次数', never: '从未',
     sourceCreated: '✅ 数据源已创建', sourceUpdated: '✅ 已更新', sourceDeleted: '✅ 已删除',
-    pasteUrl: '🔗 粘贴 URL 添加信息源', detect: '识别', detecting: '识别中...', detected: '识别成功',
+    pasteUrl: '🔗 粘贴 URL 添加信息源', detect: '识别', detecting: '识别中...', detected: '识别成功', previewRecent: '最近内容',
     cannotDetect: '无法自动识别，', manualAdd: '手动添加', confirmAdd: '确认添加',
     urlPlaceholder: 'https://...', publicSource: '公开',
     changelog: '更新日志',
@@ -218,7 +218,7 @@ const I18N = {
     noSources: 'No sources yet', confirmDelete: 'Delete this source?',
     lastFetched: 'Last fetched', fetchCount: 'Fetches', never: 'Never',
     sourceCreated: '✅ Source created', sourceUpdated: '✅ Updated', sourceDeleted: '✅ Deleted',
-    pasteUrl: '🔗 Paste URL to add source', detect: 'Detect', detecting: 'Detecting...', detected: 'Detected',
+    pasteUrl: '🔗 Paste URL to add source', detect: 'Detect', detecting: 'Detecting...', detected: 'Detected', previewRecent: 'Recent items',
     cannotDetect: 'Cannot auto-detect. ', manualAdd: 'Manual add', confirmAdd: 'Confirm',
     urlPlaceholder: 'https://...', publicSource: 'Public',
     changelog: 'Changelog',
@@ -783,7 +783,11 @@ function renderSmartAdd() {
       <div style="margin-bottom:8px;">
         <span id="resolvedName" style="font-size:15px;font-weight:600;cursor:pointer;border-bottom:1px dashed #555;" onclick="this.contentEditable=true;this.focus();this.style.borderBottom='1px solid #40c040'" onblur="this.contentEditable=false;this.style.borderBottom='1px dashed #555';resolvedSource.name=this.textContent.trim()">${resolvedSource.name}</span>
       </div>
-      <div style="font-size:12px;color:#555;margin-bottom:12px;word-break:break-all;">${document.getElementById('smart_url')?.value || ''}</div>
+      <div style="font-size:12px;color:#555;margin-bottom:8px;word-break:break-all;">${document.getElementById('smart_url')?.value || ''}</div>
+      ${resolvedSource.preview && resolvedSource.preview.length ? `<div style="margin-bottom:12px;padding:10px;background:#141414;border-radius:6px;border:1px solid #222;">
+        <div style="font-size:11px;color:#666;margin-bottom:6px;">📄 ${t('previewRecent')}</div>
+        ${resolvedSource.preview.slice(0,5).map(p => `<div style="font-size:12px;color:#aaa;padding:2px 0;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.url ? `<a href="${p.url}" target="_blank" style="color:#58a6ff;text-decoration:none;" title="${p.title}">` : ''}• ${p.title}${p.url ? '</a>' : ''}</div>`).join('')}
+      </div>` : ''}
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#888;cursor:pointer;">
           <input type="checkbox" id="smart_public" style="width:14px;height:14px;"> ${t('publicSource')}

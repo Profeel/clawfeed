@@ -141,6 +141,19 @@ function httpFetch(url, timeout = 5000) {
   });
 }
 
+function extractRssPreview(xml) {
+  const items = [];
+  const re = /<item[^>]*>([\s\S]*?)<\/item>|<entry[^>]*>([\s\S]*?)<\/entry>/gi;
+  let m;
+  while ((m = re.exec(xml)) && items.length < 5) {
+    const block = m[1] || m[2];
+    const t = block.match(/<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/i);
+    const l = block.match(/<link[^>]*href=["']([^"']+)["']/i) || block.match(/<link[^>]*>(.*?)<\/link>/i);
+    items.push({ title: t ? t[1].trim() : '(untitled)', url: l ? l[1].trim() : '' });
+  }
+  return items;
+}
+
 async function resolveSourceUrl(url) {
   const u = url.toLowerCase();
 
@@ -186,7 +199,8 @@ async function resolveSourceUrl(url) {
     if (body.includes('<rss') || body.includes('<feed') || body.includes('<channel')) {
       const titleMatch = body.match(/<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
       const name = titleMatch ? titleMatch[1].trim() : new URL(url).hostname;
-      return { name, type: 'rss', config: { url }, icon: '📡' };
+      const preview = extractRssPreview(body);
+      return { name, type: 'rss', config: { url }, icon: '📡', preview };
     }
   }
 
@@ -195,7 +209,8 @@ async function resolveSourceUrl(url) {
     try {
       const j = JSON.parse(body);
       if (j.version && j.version.includes('jsonfeed')) {
-        return { name: j.title || new URL(url).hostname, type: 'digest_feed', config: { url }, icon: '📰' };
+        const preview = (j.items || []).slice(0, 5).map(i => ({ title: i.title || '(untitled)', url: i.url }));
+        return { name: j.title || new URL(url).hostname, type: 'digest_feed', config: { url }, icon: '📰', preview };
       }
     } catch {}
   }

@@ -291,6 +291,12 @@ const server = createServer(async (req, res) => {
   try {
     // ── Auth endpoints ──
 
+    // GET /api/auth/config — tells frontend if auth is available
+    if (req.method === 'GET' && path === '/api/auth/config') {
+      const authEnabled = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+      return json(res, { authEnabled });
+    }
+
     // GET /api/auth/google
     if (req.method === 'GET' && path === '/api/auth/google') {
       // Determine redirect URI based on origin

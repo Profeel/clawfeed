@@ -114,6 +114,29 @@
   .source-form .form-actions button { padding: 8px 20px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; font-size: 13px; transition: all .2s; }
   .source-form .form-actions button.primary { background: #1a3a1a; border-color: #40c040; color: #40c040; }
   .source-form .form-actions button:hover { border-color: #666; color: #fff; }
+  .pack-card { background: #1a1a1a; border: 1px solid #282828; border-radius: 12px; padding: 16px 20px; transition: all 0.2s; }
+  .pack-card:hover { border-color: #444; background: #1e1e1e; }
+  .pack-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .pack-name { font-size: 16px; font-weight: 600; }
+  .pack-desc { font-size: 13px; color: #888; margin-top: 4px; }
+  .pack-meta { display: flex; gap: 12px; align-items: center; margin-top: 10px; font-size: 12px; color: #666; flex-wrap: wrap; }
+  .pack-meta img { width: 20px; height: 20px; border-radius: 50%; }
+  .pack-sources-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .pack-source-tag { font-size: 11px; padding: 3px 8px; background: #141414; border: 1px solid #282828; border-radius: 6px; color: #aaa; }
+  .pack-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .pack-actions button { padding: 6px 16px; font-size: 12px; border-radius: 6px; cursor: pointer; transition: all .2s; }
+  .pack-install-btn { background: #1a3a1a; border: 1px solid #40c040; color: #40c040; }
+  .pack-install-btn:hover { background: #2a4a2a; }
+  .pack-install-btn.done { background: #1a2a1a; border-color: #336633; color: #666; cursor: default; }
+  .pack-delete-btn { background: #2a2a2a; border: 1px solid #444; color: #aaa; }
+  .pack-delete-btn:hover { border-color: #f04040; color: #f04040; }
+  .pack-detail-page { max-width: 700px; margin: 0 auto; }
+  .pack-detail-sources { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .pack-detail-source { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #141414; border: 1px solid #222; border-radius: 8px; }
+  .pack-detail-source .icon { font-size: 18px; }
+  .pack-detail-source .info { flex: 1; }
+  .pack-detail-source .info .name { font-size: 14px; font-weight: 500; }
+  .pack-detail-source .info .type { font-size: 11px; color: #666; }
 </style>
 </head>
 <body>
@@ -187,6 +210,16 @@ const I18N = {
     cannotDetect: '无法自动识别，', manualAdd: '手动添加', confirmAdd: '确认添加',
     urlPlaceholder: 'https://...', publicSource: '公开',
     changelog: '更新日志',
+    sharePack: '📦 分享为 Pack', browsePacks: '🔍 浏览 Packs',
+    packName: 'Pack 名称', packDesc: '描述（可选）',
+    createPack: '创建 Pack', packCreated: '✅ Pack 已创建！',
+    packInstalled: '✅ 已安装！', packAlreadyHave: '你已有所有这些源',
+    installPack: '安装', installed: '已安装 ✅', loginToInstall: '登录后安装',
+    packSources: '包含的源', packInstalls: '次安装', packBy: '创建者',
+    deletePack: '删除', packDeleted: '✅ Pack 已删除',
+    shareLink: '分享链接', copied: '已复制！', noPacks: '暂无 Pack',
+    myPacks: '我的 Packs', backToPacks: '← 返回 Packs',
+    newAdded: '新增', skipped: '跳过（已有）',
   },
   en: {
     title: '☀️ AI Digest Dashboard',
@@ -222,6 +255,16 @@ const I18N = {
     cannotDetect: 'Cannot auto-detect. ', manualAdd: 'Manual add', confirmAdd: 'Confirm',
     urlPlaceholder: 'https://...', publicSource: 'Public',
     changelog: 'Changelog',
+    sharePack: '📦 Share as Pack', browsePacks: '🔍 Browse Packs',
+    packName: 'Pack Name', packDesc: 'Description (optional)',
+    createPack: 'Create Pack', packCreated: '✅ Pack created!',
+    packInstalled: '✅ Installed!', packAlreadyHave: 'You already have all these sources',
+    installPack: 'Install', installed: 'Installed ✅', loginToInstall: 'Login to install',
+    packSources: 'Sources', packInstalls: 'installs', packBy: 'By',
+    deletePack: 'Delete', packDeleted: '✅ Pack deleted',
+    shareLink: 'Share link', copied: 'Copied!', noPacks: 'No packs yet',
+    myPacks: 'My Packs', backToPacks: '← Back to Packs',
+    newAdded: 'added', skipped: 'skipped (existing)',
   }
 };
 
@@ -721,6 +764,14 @@ async function renderSources() {
       <div class="mark-stat"><div class="num">${types.length}</div><div class="label">${t('sourcesTypes')}</div></div>
     </div>`;
 
+    // Pack buttons
+    if (isLoggedIn) {
+      html += `<div style="display:flex;gap:8px;margin-bottom:16px;">
+        <button onclick="showCreatePackModal()" style="padding:8px 16px;background:#2a2a2a;border:1px solid #444;border-radius:8px;color:#aaa;cursor:pointer;font-size:13px;transition:all .2s;" onmouseover="this.style.borderColor='#666';this.style.color='#fff'" onmouseout="this.style.borderColor='#444';this.style.color='#aaa'">${t('sharePack')}</button>
+        <button onclick="renderPacksSection()" style="padding:8px 16px;background:#2a2a2a;border:1px solid #444;border-radius:8px;color:#aaa;cursor:pointer;font-size:13px;transition:all .2s;" onmouseover="this.style.borderColor='#666';this.style.color='#fff'" onmouseout="this.style.borderColor='#444';this.style.color='#aaa'">${t('browsePacks')}</button>
+      </div>`;
+    }
+
     if (isLoggedIn) {
       html += `<div id="smartAddContainer"></div>`;
       html += `<div id="sourceFormContainer"></div>`;
@@ -995,6 +1046,192 @@ async function doMark(url, btn) {
   } catch (e) { showToast(t('markFail') + ': ' + e.message); }
 }
 
+// ── Source Packs ──
+
+let packsViewMode = 'browse'; // 'browse' | 'detail'
+let currentPackSlug = null;
+
+async function renderPacksSection() {
+  const list = document.getElementById('list');
+  list.innerHTML = `<div class="loading">${t('loading')}</div>`;
+  try {
+    const r = await fetch(`${API}/packs`, { credentials: 'same-origin' });
+    const packs = await r.json();
+    let html = `<div style="display:flex;gap:8px;margin-bottom:16px;">
+      <button onclick="renderSources()" class="back-btn">${t('back')}</button>
+    </div>`;
+    if (!packs.length) {
+      html += `<div class="empty">${t('noPacks')}</div>`;
+    } else {
+      html += '<div class="digest-list">';
+      for (const p of packs) {
+        const sources = p.sources || [];
+        html += `<div class="pack-card">
+          <div class="pack-header">
+            <div style="flex:1;">
+              <div class="pack-name">📦 ${esc(p.name)}</div>
+              ${p.description ? `<div class="pack-desc">${esc(p.description)}</div>` : ''}
+              <div class="pack-sources-list">
+                ${sources.slice(0, 8).map(s => `<span class="pack-source-tag">${SOURCE_ICONS[s.type] || '📦'} ${esc(s.name)}</span>`).join('')}
+                ${sources.length > 8 ? `<span class="pack-source-tag">+${sources.length - 8}</span>` : ''}
+              </div>
+              <div class="pack-meta">
+                ${p.creator_avatar ? `<img src="${p.creator_avatar}" alt="">` : ''}
+                <span>${p.creator_name || 'Anonymous'}</span>
+                <span>·</span>
+                <span>${sources.length} ${t('packSources')}</span>
+                <span>·</span>
+                <span>${p.install_count} ${t('packInstalls')}</span>
+              </div>
+            </div>
+            <div class="pack-actions">
+              ${currentUser ? `<button class="pack-install-btn" onclick="installPack('${p.slug}', this)">${t('installPack')}</button>` : `<button class="pack-install-btn" onclick="showToast(t('loginToInstall'))" style="opacity:.5">${t('loginToInstall')}</button>`}
+              ${currentUser && p.created_by === currentUser.id ? `<button class="pack-delete-btn" onclick="delPack(${p.id})">${t('deletePack')}</button>` : ''}
+            </div>
+          </div>
+        </div>`;
+      }
+      html += '</div>';
+    }
+    list.innerHTML = html;
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Failed: ${e.message}</div>`;
+  }
+}
+
+async function installPack(slug, btn) {
+  if (btn.classList.contains('done')) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch(`${API}/packs/${slug}/install`, { method: 'POST', credentials: 'same-origin' });
+    const d = await r.json();
+    if (d.ok) {
+      btn.textContent = t('installed');
+      btn.classList.add('done');
+      let msg = t('packInstalled');
+      if (d.added > 0) msg += ` ${d.added} ${t('newAdded')}`;
+      if (d.skipped > 0) msg += `, ${d.skipped} ${t('skipped')}`;
+      showToast(msg);
+    } else {
+      showToast(d.error || 'Error');
+      btn.textContent = t('installPack');
+      btn.disabled = false;
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message);
+    btn.textContent = t('installPack');
+    btn.disabled = false;
+  }
+}
+
+async function delPack(id) {
+  if (!confirm(t('confirmDelete'))) return;
+  await fetch(`${API}/packs/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+  showToast(t('packDeleted'));
+  renderPacksSection();
+}
+
+function showCreatePackModal() {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;';
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `<div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+    <h3 style="margin:0 0 16px;font-size:16px;">📦 ${t('sharePack')}</h3>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px;color:#888;">${t('packName')}</label>
+      <input id="pack_name" style="width:100%;padding:8px 12px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:13px;margin-top:4px;" placeholder="My AI Sources">
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:12px;color:#888;">${t('packDesc')}</label>
+      <textarea id="pack_desc" style="width:100%;padding:8px 12px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:13px;margin-top:4px;min-height:60px;resize:vertical;font-family:inherit;" placeholder="A curated set of AI news sources..."></textarea>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="this.closest('div[style*=fixed]').remove()" style="padding:8px 20px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:13px;">${t('cancel')}</button>
+      <button onclick="doCreatePack(this)" style="padding:8px 20px;background:#1a3a1a;border:1px solid #40c040;border-radius:6px;color:#40c040;cursor:pointer;font-size:13px;">${t('createPack')}</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('pack_name').focus();
+}
+
+async function doCreatePack(btn) {
+  const name = document.getElementById('pack_name').value.trim();
+  const description = document.getElementById('pack_desc').value.trim();
+  if (!name) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    // Get user's active sources
+    const sr = await fetch(`${API}/sources`, { credentials: 'same-origin' });
+    const sources = await sr.json();
+    const mySources = sources.filter(s => currentUser && s.created_by === currentUser.id && s.is_active);
+    if (!mySources.length) { showToast('No active sources to share'); btn.disabled = false; btn.textContent = t('createPack'); return; }
+    const sourcesJson = JSON.stringify(mySources.map(s => ({ name: s.name, type: s.type, config: typeof s.config === 'string' ? JSON.parse(s.config) : s.config })));
+    const r = await fetch(`${API}/packs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+      body: JSON.stringify({ name, description, sourcesJson }) });
+    const d = await r.json();
+    if (d.slug) {
+      btn.closest('div[style*=fixed]').remove();
+      showToast(t('packCreated'));
+      // Show share link
+      const shareUrl = `${location.origin}/pack/${d.slug}`;
+      const linkModal = document.createElement('div');
+      linkModal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;';
+      linkModal.onclick = e => { if (e.target === linkModal) linkModal.remove(); };
+      linkModal.innerHTML = `<div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+        <h3 style="margin:0 0 16px;font-size:16px;">🔗 ${t('shareLink')}</h3>
+        <div style="display:flex;gap:6px;"><input readonly value="${shareUrl}" style="flex:1;padding:8px 12px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:13px;" onclick="this.select()"><button onclick="navigator.clipboard.writeText('${shareUrl}');showToast(t('copied'))" style="padding:8px 14px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:13px;">📋</button></div>
+        <div style="text-align:right;margin-top:16px;"><button onclick="this.closest('div[style*=fixed]').remove()" style="padding:8px 20px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:13px;">Close</button></div>
+      </div>`;
+      document.body.appendChild(linkModal);
+    } else {
+      showToast(d.error || 'Error');
+      btn.disabled = false; btn.textContent = t('createPack');
+    }
+  } catch (e) { showToast('Error: ' + e.message); btn.disabled = false; btn.textContent = t('createPack'); }
+}
+
+async function renderPackDetailPage(slug) {
+  const list = document.getElementById('list');
+  const viewer = document.getElementById('viewer');
+  viewer.style.display = 'none';
+  list.innerHTML = `<div class="loading">${t('loading')}</div>`;
+  try {
+    const r = await fetch(`${API}/packs/${slug}`, { credentials: 'same-origin' });
+    if (!r.ok) { list.innerHTML = `<div class="empty">Pack not found</div>`; return; }
+    const p = await r.json();
+    const sources = p.sources || [];
+    let html = `<div class="pack-detail-page">
+      <div style="margin-bottom:20px;">
+        <div style="font-size:24px;font-weight:700;">📦 ${esc(p.name)}</div>
+        ${p.description ? `<div style="font-size:14px;color:#888;margin-top:8px;">${esc(p.description)}</div>` : ''}
+        <div class="pack-meta" style="margin-top:12px;">
+          ${p.creator_avatar ? `<img src="${p.creator_avatar}" style="width:24px;height:24px;border-radius:50%;" alt="">` : ''}
+          <span>${t('packBy')} ${p.creator_name || 'Anonymous'}</span>
+          <span>·</span>
+          <span>${sources.length} ${t('packSources')}</span>
+          <span>·</span>
+          <span>${p.install_count} ${t('packInstalls')}</span>
+        </div>
+      </div>
+      <div style="margin-bottom:20px;">
+        ${currentUser ? `<button class="pack-install-btn" onclick="installPack('${p.slug}', this)" style="padding:10px 28px;font-size:14px;border-radius:8px;">${t('installPack')}</button>` : `<a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}" style="padding:10px 28px;font-size:14px;">${t('loginToInstall')}</a>`}
+      </div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:8px;">${t('packSources')} (${sources.length})</div>
+      <div class="pack-detail-sources">
+        ${sources.map(s => `<div class="pack-detail-source">
+          <span class="icon">${SOURCE_ICONS[s.type] || '📦'}</span>
+          <div class="info"><div class="name">${esc(s.name)}</div><div class="type">${s.type}</div></div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+    list.innerHTML = html;
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Failed: ${e.message}</div>`;
+  }
+}
+
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.onclick = () => {
@@ -1015,6 +1252,8 @@ if (location.hash) {
     document.querySelector('.tab.active')?.classList.remove('active');
     const t = document.querySelector('.tab[data-type="'+h+'"]');
     if (t) t.classList.add('active');
+  } else if (h.startsWith('pack/')) {
+    currentPackSlug = h.slice(5);
   }
 }
 
@@ -1024,7 +1263,17 @@ document.addEventListener('click', (e) => {
   });
 });
 applyLang();
-checkAuth().then(() => renderList());
+// Detect /pack/:slug URL
+const packPageMatch = location.pathname.match(/\/pack\/([a-z0-9_-]+)/);
+checkAuth().then(() => {
+  if (packPageMatch) {
+    renderPackDetailPage(packPageMatch[1]);
+  } else if (currentPackSlug) {
+    renderPackDetailPage(currentPackSlug);
+  } else {
+    renderList();
+  }
+});
 </script>
 </body>
 </html>

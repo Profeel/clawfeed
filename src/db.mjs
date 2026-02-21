@@ -59,6 +59,13 @@ export function getDb(dbPath) {
   } catch (e) {
     if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) console.error('Migration 004:', e.message);
   }
+  // Run source packs migration (idempotent)
+  try {
+    const sql5 = readFileSync(join(ROOT, 'migrations', '005_source_packs.sql'), 'utf8');
+    _db.exec(sql5);
+  } catch (e) {
+    if (!e.message.includes('already exists')) console.error('Migration 005:', e.message);
+  }
   // Backfill slugs for existing users
   _backfillSlugs(_db);
   return _db;
@@ -261,6 +268,49 @@ export function updateSource(db, id, patch) {
 
 export function deleteSource(db, id) {
   return db.prepare('DELETE FROM sources WHERE id = ?').run(id);
+}
+
+// ── Source Packs ──
+
+export function createPack(db, { name, description, slug, sourcesJson, createdBy }) {
+  const result = db.prepare(
+    'INSERT INTO source_packs (name, description, slug, sources_json, created_by) VALUES (?, ?, ?, ?, ?)'
+  ).run(name, description || '', slug, sourcesJson, createdBy);
+  return { id: result.lastInsertRowid };
+}
+
+export function getPack(db, id) {
+  return db.prepare('SELECT * FROM source_packs WHERE id = ?').get(id);
+}
+
+export function getPackBySlug(db, slug) {
+  return db.prepare('SELECT sp.*, u.name as creator_name, u.avatar as creator_avatar, u.slug as creator_slug FROM source_packs sp LEFT JOIN users u ON sp.created_by = u.id WHERE sp.slug = ?').get(slug);
+}
+
+export function listPacks(db, { publicOnly, userId } = {}) {
+  let sql = 'SELECT sp.*, u.name as creator_name, u.avatar as creator_avatar, u.slug as creator_slug FROM source_packs sp LEFT JOIN users u ON sp.created_by = u.id';
+  const conditions = [];
+  const params = [];
+  if (publicOnly && userId) {
+    conditions.push('(sp.is_public = 1 OR sp.created_by = ?)');
+    params.push(userId);
+  } else if (publicOnly) {
+    conditions.push('sp.is_public = 1');
+  } else if (userId) {
+    conditions.push('sp.created_by = ?');
+    params.push(userId);
+  }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY sp.install_count DESC, sp.created_at DESC';
+  return db.prepare(sql).all(...params);
+}
+
+export function incrementPackInstall(db, id) {
+  return db.prepare("UPDATE source_packs SET install_count = install_count + 1, updated_at = datetime('now') WHERE id = ?").run(id);
+}
+
+export function deletePack(db, id) {
+  return db.prepare('DELETE FROM source_packs WHERE id = ?').run(id);
 }
 
 // ── Config ──

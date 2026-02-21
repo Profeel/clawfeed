@@ -5,7 +5,7 @@ import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'crypto';
-import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getUserBySlug, listDigestsByUser, countDigestsByUser } from './db.mjs';
+import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack } from './db.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -297,6 +297,18 @@ const server = createServer(async (req, res) => {
     });
   }
 
+  // SPA route: /pack/:slug serves frontend HTML
+  if (req.method === 'GET' && path.startsWith('/pack/')) {
+    try {
+      const html = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    } catch (e) {
+      res.writeHead(500); res.end('Internal error'); return;
+    }
+  }
+
   if (!path.startsWith('/api/') && path !== '/mark' && path !== '/marks') {
     path = '/api' + path;
   }
@@ -523,6 +535,69 @@ const server = createServer(async (req, res) => {
       if (!s) return json(res, { error: 'not found' }, 404);
       if (s.created_by !== req.user.id) return json(res, { error: 'forbidden' }, 403);
       deleteSource(db, parseInt(sourceMatch[1]));
+      return json(res, { ok: true });
+    }
+
+    // ── Source Packs endpoints ──
+
+    if (req.method === 'GET' && path === '/api/packs') {
+      const packs = listPacks(db, { publicOnly: true, userId: req.user?.id });
+      return json(res, packs.map(p => ({ ...p, sources: JSON.parse(p.sources_json || '[]'), sources_json: undefined })));
+    }
+
+    const packSlugMatch = path.match(/^\/api\/packs\/([a-z0-9_-]+)$/);
+    const packInstallMatch = path.match(/^\/api\/packs\/([a-z0-9_-]+)\/install$/);
+
+    if (req.method === 'POST' && packInstallMatch) {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const pack = getPackBySlug(db, packInstallMatch[1]);
+      if (!pack) return json(res, { error: 'not found' }, 404);
+      const sources = JSON.parse(pack.sources_json || '[]');
+      const userSources = listSources(db, { userId: req.user.id });
+      let added = 0;
+      for (const s of sources) {
+        // Deduplicate: skip if user already has same type+config
+        const configStr = typeof s.config === 'string' ? s.config : JSON.stringify(s.config);
+        const exists = userSources.some(us => us.type === s.type && us.config === configStr);
+        if (!exists) {
+          createSource(db, { name: s.name, type: s.type, config: configStr, isPublic: 0, createdBy: req.user.id });
+          added++;
+        }
+      }
+      incrementPackInstall(db, pack.id);
+      return json(res, { ok: true, added, skipped: sources.length - added });
+    }
+
+    if (req.method === 'GET' && packSlugMatch) {
+      const pack = getPackBySlug(db, packSlugMatch[1]);
+      if (!pack) return json(res, { error: 'not found' }, 404);
+      if (!pack.is_public && (!req.user || pack.created_by !== req.user.id)) return json(res, { error: 'not found' }, 404);
+      return json(res, { ...pack, sources: JSON.parse(pack.sources_json || '[]'), sources_json: undefined });
+    }
+
+    if (req.method === 'POST' && path === '/api/packs') {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const body = await parseBody(req);
+      const name = (body.name || '').trim();
+      if (!name) return json(res, { error: 'name required' }, 400);
+      let slug = body.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      // Ensure unique slug
+      let candidate = slug;
+      let i = 1;
+      while (getPackBySlug(db, candidate)) { candidate = slug + '-' + (i++); }
+      slug = candidate;
+      const sourcesJson = body.sourcesJson || body.sources_json || '[]';
+      const result = createPack(db, { name, description: body.description || '', slug, sourcesJson, createdBy: req.user.id });
+      return json(res, { ...result, slug }, 201);
+    }
+
+    const packIdMatch = path.match(/^\/api\/packs\/(\d+)$/);
+    if (req.method === 'DELETE' && packIdMatch) {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const pack = getPack(db, parseInt(packIdMatch[1]));
+      if (!pack) return json(res, { error: 'not found' }, 404);
+      if (pack.created_by !== req.user.id) return json(res, { error: 'forbidden' }, 403);
+      deletePack(db, pack.id);
       return json(res, { ok: true });
     }
 

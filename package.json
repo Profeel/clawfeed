@@ -1,0 +1,16 @@
+{
+  "name": "ai-digest",
+  "version": "0.1.0",
+  "description": "AI-powered news digest tool — generates structured summaries from Twitter/RSS feeds",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "migrate": "node src/migrate.mjs",
+    "dev": "node --watch src/server.mjs"
+  },
+  "keywords": ["ai", "digest", "news", "openclaw", "skill"],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}

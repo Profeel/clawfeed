@@ -167,6 +167,9 @@ const I18N = {
     noSources: '暂无数据源', confirmDelete: '确定删除此数据源？',
     lastFetched: '上次抓取', fetchCount: '抓取次数', never: '从未',
     sourceCreated: '✅ 数据源已创建', sourceUpdated: '✅ 已更新', sourceDeleted: '✅ 已删除',
+    pasteUrl: '🔗 粘贴 URL 添加信息源', detect: '识别', detecting: '识别中...', detected: '识别成功',
+    cannotDetect: '无法自动识别，', manualAdd: '手动添加', confirmAdd: '确认添加',
+    urlPlaceholder: 'https://...', publicSource: '公开',
   },
   en: {
     title: '☀️ AI Digest Dashboard',
@@ -198,6 +201,9 @@ const I18N = {
     noSources: 'No sources yet', confirmDelete: 'Delete this source?',
     lastFetched: 'Last fetched', fetchCount: 'Fetches', never: 'Never',
     sourceCreated: '✅ Source created', sourceUpdated: '✅ Updated', sourceDeleted: '✅ Deleted',
+    pasteUrl: '🔗 Paste URL to add source', detect: 'Detect', detecting: 'Detecting...', detected: 'Detected',
+    cannotDetect: 'Cannot auto-detect. ', manualAdd: 'Manual add', confirmAdd: 'Confirm',
+    urlPlaceholder: 'https://...', publicSource: 'Public',
   }
 };
 
@@ -641,7 +647,7 @@ async function renderSources() {
     </div>`;
 
     if (isLoggedIn) {
-      html += `<div style="margin-bottom:16px;"><button onclick="toggleSourceForm()" style="padding:8px 18px;background:#1a3a1a;border:1px solid #40c040;border-radius:8px;color:#40c040;cursor:pointer;font-size:13px;transition:all .2s;">${t('addSource')}</button></div>`;
+      html += `<div id="smartAddContainer"></div>`;
       html += `<div id="sourceFormContainer"></div>`;
     }
 
@@ -833,7 +839,7 @@ async function doMark(url, btn) {
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.onclick = () => {
-    document.querySelector('.tab.active').classList.remove('active');
+    document.querySelector('.tab.active')?.classList.remove('active');
     tab.classList.add('active');
     currentType = tab.dataset.type;
     location.hash = currentType;
@@ -845,7 +851,7 @@ if (location.hash) {
   const h = location.hash.substring(1);
   if (['4h','daily','weekly','monthly','marks','sources'].includes(h)) {
     currentType = h;
-    document.querySelector('.tab.active').classList.remove('active');
+    document.querySelector('.tab.active')?.classList.remove('active');
     const t = document.querySelector('.tab[data-type="'+h+'"]');
     if (t) t.classList.add('active');
   }

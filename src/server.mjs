@@ -1,4 +1,5 @@
 import { createServer } from 'http';
+import http from 'http';
 import https from 'https';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -120,6 +121,93 @@ function _digestTitle(d, ca) {
   const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
   const labels = { '4h': 'AI 简报', daily: 'AI 日报', weekly: 'AI 周报', monthly: 'AI 月报' };
   return `${icons[d.type] || '📝'} ${labels[d.type] || 'AI Digest'} | ${timeStr} SGT`;
+}
+
+// ── Source URL resolver ──
+function httpFetch(url, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const r = mod.get(url, { headers: { 'User-Agent': 'AI-Digest/1.0', 'Accept': 'text/html,application/xhtml+xml,application/xml,application/json,*/*' } }, (resp) => {
+      if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
+        clearTimeout(timer);
+        return httpFetch(resp.headers.location, timeout - 1000).then(resolve).catch(reject);
+      }
+      let data = '';
+      resp.on('data', c => { data += c; if (data.length > 200000) resp.destroy(); });
+      resp.on('end', () => { clearTimeout(timer); resolve({ contentType: resp.headers['content-type'] || '', body: data }); });
+    });
+    const timer = setTimeout(() => { r.destroy(); reject(new Error('timeout')); }, timeout);
+    r.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
+async function resolveSourceUrl(url) {
+  const u = url.toLowerCase();
+
+  // Twitter/X
+  if (u.includes('x.com') || u.includes('twitter.com')) {
+    const listMatch = url.match(/\/i\/lists\/(\d+)/);
+    if (listMatch) {
+      return { name: `X List ${listMatch[1]}`, type: 'twitter_list', config: { list_url: url }, icon: '🐦' };
+    }
+    const handleMatch = url.match(/(?:x\.com|twitter\.com)\/(@?[A-Za-z0-9_]+)/);
+    if (handleMatch && !['i','search','explore','home','notifications','messages','settings'].includes(handleMatch[1].toLowerCase())) {
+      const handle = handleMatch[1].replace(/^@/, '');
+      return { name: `@${handle}`, type: 'twitter_feed', config: { handle: `@${handle}` }, icon: '🐦' };
+    }
+    return { name: 'X Feed', type: 'twitter_feed', config: { handle: url }, icon: '🐦' };
+  }
+
+  // Reddit
+  const redditMatch = url.match(/reddit\.com\/r\/([A-Za-z0-9_]+)/);
+  if (redditMatch) {
+    return { name: `r/${redditMatch[1]}`, type: 'reddit', config: { subreddit: redditMatch[1], sort: 'hot', limit: 20 }, icon: '👽' };
+  }
+
+  // GitHub Trending
+  if (u.includes('github.com/trending')) {
+    const langMatch = url.match(/\/trending\/([a-z0-9+#.-]+)/i);
+    const lang = langMatch ? langMatch[1] : '';
+    return { name: `GitHub Trending${lang ? ' - ' + lang : ''}`, type: 'github_trending', config: { language: lang || 'all', since: 'daily' }, icon: '⭐' };
+  }
+
+  // Hacker News
+  if (u.includes('news.ycombinator.com')) {
+    return { name: 'Hacker News', type: 'hackernews', config: { filter: 'top', min_score: 100 }, icon: '🔶' };
+  }
+
+  // Fetch the URL to detect content type
+  const resp = await httpFetch(url);
+  const ct = resp.contentType.toLowerCase();
+  const body = resp.body;
+
+  // RSS/Atom
+  if (ct.includes('xml') || ct.includes('rss') || ct.includes('atom') || body.trimStart().startsWith('<?xml') || body.includes('<rss') || body.includes('<feed')) {
+    if (body.includes('<rss') || body.includes('<feed') || body.includes('<channel')) {
+      const titleMatch = body.match(/<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/);
+      const name = titleMatch ? titleMatch[1].trim() : new URL(url).hostname;
+      return { name, type: 'rss', config: { url }, icon: '📡' };
+    }
+  }
+
+  // JSON Feed
+  if (ct.includes('json') || body.trimStart().startsWith('{')) {
+    try {
+      const j = JSON.parse(body);
+      if (j.version && j.version.includes('jsonfeed')) {
+        return { name: j.title || new URL(url).hostname, type: 'digest_feed', config: { url }, icon: '📰' };
+      }
+    } catch {}
+  }
+
+  // HTML - extract title, treat as website
+  if (ct.includes('html') || body.includes('<html') || body.includes('<!DOCTYPE')) {
+    const titleMatch = body.match(/<title[^>]*>(.*?)<\/title>/is);
+    const name = titleMatch ? titleMatch[1].trim().replace(/\s+/g, ' ').slice(0, 100) : new URL(url).hostname;
+    return { name, type: 'website', config: { url }, icon: '🌐' };
+  }
+
+  throw new Error('Cannot detect source type');
 }
 
 const server = createServer(async (req, res) => {
@@ -354,6 +442,21 @@ const server = createServer(async (req, res) => {
         target: m.url, at: m.created_at, title: m.title || '',
       }));
       return json(res, { tweets: marks.filter(m => m.status === 'pending').map(m => ({ url: m.url, markedAt: m.created_at })), history });
+    }
+
+    // ── Source resolve endpoint ──
+    if (req.method === 'POST' && path === '/api/sources/resolve') {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const body = await parseBody(req);
+      const url = (body.url || '').trim();
+      if (!url) return json(res, { error: 'url required' }, 400);
+
+      try {
+        const result = await resolveSourceUrl(url);
+        return json(res, result);
+      } catch (e) {
+        return json(res, { error: e.message || 'cannot resolve' }, 422);
+      }
     }
 
     // ── Sources endpoints ──

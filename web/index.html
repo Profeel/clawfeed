@@ -1322,17 +1322,21 @@ function showCreatePackModal() {
   document.body.appendChild(modal);
   // Auto-generate name & description from sources
   fetch(`${API}/sources`, { credentials: 'same-origin' }).then(r => r.json()).then(sources => {
-    const active = sources.filter(s => s.is_active);
-    if (!active.length) return;
-    const types = [...new Set(active.map(s => s.type))];
+    const mySources = sources.filter(s => s.is_active && currentUser && s.created_by === currentUser.id);
+    if (!mySources.length) {
+      const prev = document.getElementById('pack_preview');
+      if (prev) prev.innerHTML = `<div style="color:#f85149;">${lang==='zh'?'你还没有自己创建的源，只能打包自己创建的源':'You have no sources created by you. Only sources you created can be packaged.'}</div>`;
+      return;
+    }
+    const types = [...new Set(mySources.map(s => s.type))];
     const typeLabels = { twitter_feed: 'Twitter', twitter_list: 'Twitter Lists', rss: 'RSS', website: 'Web', hackernews: 'Hacker News', reddit: 'Reddit', github_trending: 'GitHub', custom_api: 'API', digest_feed: 'Digest Feeds' };
     const labels = types.map(t => typeLabels[t] || t);
     const nameEl = document.getElementById('pack_name');
     const descEl = document.getElementById('pack_desc');
     if (nameEl && !nameEl._edited) nameEl.value = `${currentUser?.name || 'My'}'s ${labels.slice(0,2).join(' + ')} Pack`;
     const prev = document.getElementById('pack_preview');
-    if (prev) prev.innerHTML = `<div style="color:#888;margin-bottom:6px;">${lang==='zh'?'将打包以下':'Will include'} <b style="color:#40c040;">${active.length}</b> ${lang==='zh'?'个源：':'sources:'}</div>` + active.map(s => `<div style="padding:2px 0;">${SOURCE_ICONS[s.type]||'📦'} ${s.name} <span style="color:#444;">· ${s.type}</span></div>`).join('');
-    if (descEl && !descEl._edited) descEl.value = `${active.length} curated sources: ${active.map(s => s.name).join(', ')}`;
+    if (prev) prev.innerHTML = `<div style="color:#888;margin-bottom:6px;">${lang==='zh'?'将打包以下':'Will include'} <b style="color:#40c040;">${mySources.length}</b> ${lang==='zh'?'个源：':'sources:'}</div>` + mySources.map(s => `<div style="padding:2px 0;">${SOURCE_ICONS[s.type]||'📦'} ${s.name} <span style="color:#444;">· ${s.type}</span></div>`).join('');
+    if (descEl && !descEl._edited) descEl.value = `${mySources.length} curated sources: ${mySources.map(s => s.name).join(', ')}`;
   }).catch(() => {});
   document.getElementById('pack_name').oninput = function() { this._edited = true; };
   document.getElementById('pack_desc').oninput = function() { this._edited = true; };

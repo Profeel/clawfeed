@@ -238,7 +238,7 @@ function setLang(l) {
 function applyLang() {
   document.querySelector('h1').textContent = t('title');
   document.getElementById('subtitleText').textContent = t('subtitle');
-  document.getElementById('changelogLink').textContent = t('changelog');
+  const cl = document.getElementById('changelogLink'); if (cl) cl.textContent = t('changelog');
   document.querySelector('[data-type="4h"]').textContent = t('tab4h');
   document.querySelector('[data-type="daily"]').textContent = t('tabDaily');
   document.querySelector('[data-type="weekly"]').textContent = t('tabWeekly');

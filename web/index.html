@@ -924,7 +924,9 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelector('.tab.active')?.classList.remove('active');
     tab.classList.add('active');
     currentType = tab.dataset.type;
+    currentOffset = 0; allLoaded = false;
     location.hash = currentType;
+    document.getElementById('viewer').style.display = 'none';
     renderList();
   };
 });

@@ -55,6 +55,6 @@
 
 ## v0.1.0 — 2026-02-21
 ### ✨ New
-- **Initial release** — AI Digest with web dashboard, Google OAuth, SQLite storage
+- **Initial release** — ClawFeed with web dashboard, Google OAuth, SQLite storage
 - **4H cron** — Every 4 hours digest from Twitter For You feed
 - **Daily/Weekly/Monthly** — Recursive summarization pipeline

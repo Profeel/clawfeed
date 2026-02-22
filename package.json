@@ -1,5 +1,5 @@
 {
-  "name": "ai-digest",
+  "name": "clawfeed",
   "version": "0.1.0",
   "description": "AI-powered news digest tool — generates structured summaries from Twitter/RSS feeds",
   "type": "module",

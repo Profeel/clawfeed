@@ -1,4 +1,4 @@
-# AI Digest
+# ClawFeed
 
 AI-powered news digest tool. Automatically generates structured summaries (4H/daily/weekly/monthly) from Twitter and RSS feeds.
 
@@ -73,7 +73,7 @@ handle /digest/api/* {
     reverse_proxy localhost:8767
 }
 handle_path /digest/* {
-    root * /path/to/ai-digest/web
+    root * /path/to/clawfeed/web
     file_server
 }
 ```

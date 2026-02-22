@@ -9,6 +9,8 @@ set -e
 
 API="${AI_DIGEST_API:-https://digest.kevinhe.io/api}"
 FEED="${AI_DIGEST_FEED:-https://digest.kevinhe.io/feed}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AI_DIGEST_DB="${AI_DIGEST_DB:-$SCRIPT_DIR/../data/digest.db}"
 ALICE="Cookie: session=test-sess-alice"
 BOB="Cookie: session=test-sess-bob"
 CAROL="Cookie: session=test-sess-carol"
@@ -133,9 +135,12 @@ check_code "Bob cannot delete Alice's source → 403" "403" \
 r=$(curl -s -X DELETE "$API/sources/$A_S3" -H "$ALICE")
 check "Alice deletes her private source" 'ok' "$r"
 
-# Verify it's gone
+# Verify subscription still exists but marked as deleted (soft delete)
 r=$(curl -s "$API/subscriptions" -H "$ALICE" | jq_len)
-check "Alice now has 2 subscriptions" "2" "$r"
+check "Alice still has 3 subscriptions (1 soft-deleted)" "3" "$r"
+# Verify the deleted one has sourceDeleted=true
+r=$(curl -s "$API/subscriptions" -H "$ALICE")
+check "Deleted source marked sourceDeleted" '"sourceDeleted":true' "$r"
 
 # ═══════════════════════════════════════════
 # 5. PACKS — CREATE + SHARE
@@ -372,11 +377,64 @@ echo "─── 15. Source Deletion + Subscriber Impact ───"
 CAROL_BEFORE=$(curl -s "$API/subscriptions" -H "$CAROL" | jq_len)
 curl -s -X DELETE "$API/sources/$A_S2" -H "$ALICE" > /dev/null
 CAROL_AFTER=$(curl -s "$API/subscriptions" -H "$CAROL" | jq_len)
-check "Alice deletes source → Carol loses 1 sub" "$((CAROL_BEFORE - 1))" "$CAROL_AFTER"
+check "Alice soft-deletes source → Carol keeps sub count" "$CAROL_BEFORE" "$CAROL_AFTER"
+# But Carol sees it as deleted
+r=$(curl -s "$API/subscriptions" -H "$CAROL")
+check "Carol sees soft-deleted source" '"sourceDeleted":true' "$r"
 
 # Pack still exists but with stale data
 r=$(curl -s "$API/packs/$A_PACK")
 check "Pack still exists after source deleted" 'Alice AI Pack' "$r"
+
+# ═══════════════════════════════════════════
+# 16. SOFT DELETE
+# ═══════════════════════════════════════════
+echo ""
+echo "─── 16. Soft Delete ───"
+
+# Create a source for soft delete testing
+SD_SRC=$(curl -s -X POST "$API/sources" -H "$ALICE" -H "Content-Type: application/json" \
+  -d '{"name":"SoftDel Test","type":"rss","config":"{\"url\":\"https://softdel.test/rss\"}","isPublic":true}' | jq_val "d['id']")
+
+# Bob subscribes to it
+curl -s -X POST "$API/subscriptions" -H "$BOB" -H "Content-Type: application/json" \
+  -d "{\"sourceId\":$SD_SRC}" > /dev/null
+
+# 16.1 Delete source → is_deleted=1, not removed from DB
+curl -s -X DELETE "$API/sources/$SD_SRC" -H "$ALICE" > /dev/null
+SD_CHECK=$(sqlite3 "$AI_DIGEST_DB" "SELECT is_deleted FROM sources WHERE id=$SD_SRC" 2>/dev/null || echo "")
+check "16.1 Soft delete sets is_deleted=1" "1" "$SD_CHECK"
+
+# 16.2 Deleted source hidden from GET /sources
+r=$(curl -s "$API/sources" -H "$ALICE")
+check_not "16.2 Deleted source hidden from sources list" 'SoftDel Test' "$r"
+
+# 16.3 Subscriber sees deleted source as "已停用"
+r=$(curl -s "$API/subscriptions" -H "$BOB")
+check "16.3 Subscriber sees sourceDeleted field" '"sourceDeleted":true' "$r"
+
+# 16.4 Pack install skips deleted source (no zombie)
+# Create a pack containing the deleted source's type+config
+SD_PACK=$(curl -s -X POST "$API/packs" -H "$ALICE" -H "Content-Type: application/json" \
+  -d '{"name":"SoftDel Pack","sourcesJson":"[{\"name\":\"SoftDel Test\",\"type\":\"rss\",\"config\":\"{\\\"url\\\":\\\"https://softdel.test/rss\\\"}\"}]"}' \
+  | jq_val "d.get('slug','')")
+r=$(curl -s -X POST "$API/packs/$SD_PACK/install" -H "$CAROL")
+check "16.4 Pack install skips deleted source" '"added":0' "$r"
+
+# 16.5 Pack install: mixed (skip deleted, create non-deleted only)
+SD_PACK2=$(curl -s -X POST "$API/packs" -H "$ALICE" -H "Content-Type: application/json" \
+  -d '{"name":"Mixed Pack","sourcesJson":"[{\"name\":\"SoftDel Test\",\"type\":\"rss\",\"config\":\"{\\\"url\\\":\\\"https://softdel.test/rss\\\"}\"},{\"name\":\"Brand New Source\",\"type\":\"rss\",\"config\":\"{\\\"url\\\":\\\"https://brandnew.test/rss\\\"}\"}]"}' \
+  | jq_val "d.get('slug','')")
+r=$(curl -s -X POST "$API/packs/$SD_PACK2/install" -H "$DAVE")
+check "16.5 Mixed pack: only non-deleted added" '"added":1' "$r"
+
+# 16.6 Re-install after source deleted → 0 added (for the deleted one)
+r=$(curl -s -X POST "$API/packs/$SD_PACK/install" -H "$DAVE")
+check "16.6 Re-install deleted source pack → 0 added" '"added":0' "$r"
+
+# 16.7 Deleted source not counted in active sources
+r=$(curl -s "$API/sources")
+check_not "16.7 Deleted source not in active sources" 'SoftDel Test' "$r"
 
 # ═══════════════════════════════════════════
 # RESULTS

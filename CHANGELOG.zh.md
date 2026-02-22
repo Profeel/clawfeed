@@ -56,6 +56,6 @@
 
 ## v0.1.0 — 2026-02-21
 ### ✨ 新增
-- **初始版本** — AI Digest Web Dashboard
+- **初始版本** — ClawFeed Web Dashboard
 - **4 小时定时** — 每 4 小时从 Twitter For You 生成摘要
 - **递归摘要** — 日报/周报/月报层级汇总

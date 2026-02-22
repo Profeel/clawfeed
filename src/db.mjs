@@ -73,6 +73,17 @@ export function getDb(dbPath) {
   } catch (e) {
     if (!e.message.includes('already exists')) console.error('Migration 006:', e.message);
   }
+  // Run soft delete migration (idempotent)
+  try {
+    const sql7 = readFileSync(join(ROOT, 'migrations', '007_soft_delete.sql'), 'utf8');
+    for (const stmt of sql7.split(';').map(s => s.trim()).filter(Boolean)) {
+      try { _db.exec(stmt + ';'); } catch (e) {
+        if (!e.message.includes('duplicate column')) throw e;
+      }
+    }
+  } catch (e) {
+    if (!e.message.includes('duplicate column')) console.error('Migration 007:', e.message);
+  }
   // Backfill slugs for existing users
   _backfillSlugs(_db);
   return _db;
@@ -231,7 +242,7 @@ export function countDigestsByUser(db, userId, { type } = {}) {
 
 export function listSources(db, { activeOnly, userId, includePublic } = {}) {
   let sql = 'SELECT sources.*, users.name as creator_name FROM sources LEFT JOIN users ON sources.created_by = users.id';
-  const conditions = [];
+  const conditions = ['sources.is_deleted = 0'];
   const params = [];
   if (activeOnly) { conditions.push('is_active = 1'); }
   if (userId && includePublic) {
@@ -283,8 +294,15 @@ export function updateSource(db, id, patch) {
   return db.prepare(`UPDATE sources SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 }
 
-export function deleteSource(db, id) {
-  return db.prepare('DELETE FROM sources WHERE id = ?').run(id);
+export function deleteSource(db, id, userId) {
+  if (userId) {
+    return db.prepare("UPDATE sources SET is_deleted = 1, deleted_at = datetime('now') WHERE id = ? AND created_by = ?").run(id, userId);
+  }
+  return db.prepare("UPDATE sources SET is_deleted = 1, deleted_at = datetime('now') WHERE id = ?").run(id);
+}
+
+export function getSourceByTypeConfig(db, type, config) {
+  return db.prepare('SELECT * FROM sources WHERE type = ? AND config = ?').get(type, config);
 }
 
 // ── Source Packs ──
@@ -334,7 +352,7 @@ export function deletePack(db, id) {
 
 export function listSubscriptions(db, userId) {
   return db.prepare(`
-    SELECT s.*, us.created_at as subscribed_at, u.name as creator_name
+    SELECT s.*, us.created_at as subscribed_at, u.name as creator_name, s.is_deleted
     FROM user_subscriptions us
     JOIN sources s ON us.source_id = s.id
     LEFT JOIN users u ON s.created_by = u.id

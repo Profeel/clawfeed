@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Digest</title>
+<title>ClawFeed</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀️</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -143,10 +143,10 @@
 <body>
 <div class="container">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px;">
-    <h1 style="margin:0;cursor:pointer" onclick="goHome()">☀️ AI Digest <span style="font-size:12px;font-weight:400;color:#555;vertical-align:middle;">v0.5.0</span></h1>
+    <h1 style="margin:0;cursor:pointer" onclick="goHome()">☀️ ClawFeed <span style="font-size:12px;font-weight:400;color:#555;vertical-align:middle;">v0.5.0</span></h1>
     <div class="auth-bar" id="authBar"></div>
   </div>
-  <p class="subtitle"><span id="subtitleText">Kevin's AI news digest — powered by Lisa</span></p>
+  <p class="subtitle"><span id="subtitleText">AI news digest — powered by Lisa@OpenClaw, Jessie@Zylos</span></p>
   <div class="tabs">
     <div class="tab active" data-type="4h">4H 简报</div>
     <div class="tab" data-type="daily">日报</div>
@@ -178,8 +178,8 @@ window.onerror = function(msg, src, line) {
 // ── i18n ──
 const I18N = {
   zh: {
-    title: '☀️ AI Digest',
-    subtitle: 'AI 新闻简报 — powered by Lisa',
+    title: '☀️ ClawFeed',
+    subtitle: 'AI 新闻简报 — powered by Lisa@OpenClaw, Jessie@Zylos',
     tab4h: '4H 简报', tabDaily: '日报', tabWeekly: '周报', tabMonthly: '月报', tabMarks: '📌 Mark 收藏',
     loginBanner: '💡 登录 Google 账号即可收藏文章、管理个人书签',
     loginBtn: '登录', logout: '退出', signIn: '登录',
@@ -235,8 +235,8 @@ const I18N = {
     newAdded: '新增', skipped: '跳过（已有）',
   },
   en: {
-    title: '☀️ AI Digest',
-    subtitle: 'AI news digest — powered by Lisa',
+    title: '☀️ ClawFeed',
+    subtitle: 'AI news digest — powered by Lisa@OpenClaw, Jessie@Zylos',
     tab4h: '4H Briefs', tabDaily: 'Daily', tabWeekly: 'Weekly', tabMonthly: 'Monthly', tabMarks: '📌 Marks',
     loginBanner: '💡 Sign in with Google to bookmark articles and manage your reading list',
     loginBtn: 'Login', logout: 'Logout', signIn: 'Sign in',
@@ -414,7 +414,7 @@ function renderAuthBar() {
   const moreMenu = `<div class="user-menu" onclick="document.getElementById('moreDropdown').classList.toggle('show')">
     <span style="cursor:pointer;font-size:14px;color:#666;transition:color .2s;padding:2px 4px;" onmouseover="this.style.color='#ccc'" onmouseout="this.style.color='#666'">⋯</span>
     <div id="moreDropdown" class="user-dropdown">
-      <a href="https://github.com/kevinho/ai-digest" target="_blank" onclick="event.stopPropagation();">${ghSvg} GitHub</a>
+      <a href="https://github.com/kevinho/clawfeed" target="_blank" onclick="event.stopPropagation();">${ghSvg} GitHub</a>
       <a href="#" onclick="event.stopPropagation();showChangelog();return false;">📋 ${t('changelog')}</a>
       <a href="#" onclick="event.stopPropagation();showRoadmap();return false;">🗺️ ${t('roadmap')}</a>
     </div>

@@ -1,4 +1,4 @@
-# AI Digest
+# ClawFeed
 
 > **Live Demo**: [digest.kevinhe.io](https://digest.kevinhe.io)
 
@@ -20,15 +20,15 @@ AI-powered news digest tool that generates structured summaries from Twitter/RSS
 
 ### Option 1: OpenClaw Skill
 
-Drop the `ai-digest` folder into your OpenClaw skills directory, or symlink it:
+Drop the `clawfeed` folder into your OpenClaw skills directory, or symlink it:
 
 ```bash
 # Clone into your skills folder
 cd ~/.openclaw/skills/
-git clone https://github.com/kevinho/ai-digest.git
+git clone https://github.com/kevinho/clawfeed.git
 
 # Or symlink from wherever you cloned it
-ln -s /path/to/ai-digest ~/.openclaw/skills/ai-digest
+ln -s /path/to/clawfeed ~/.openclaw/skills/clawfeed
 ```
 
 OpenClaw will auto-detect `SKILL.md` and load the skill. The agent can then:
@@ -41,7 +41,7 @@ OpenClaw will auto-detect `SKILL.md` and load the skill. The agent can then:
 ```bash
 # Clone into Zylos skills directory
 cd ~/.zylos/skills/  # or wherever Zylos looks for skills
-git clone https://github.com/kevinho/ai-digest.git
+git clone https://github.com/kevinho/clawfeed.git
 ```
 
 Zylos reads `SKILL.md` for tool definitions. The digest API server runs as a sidecar service.
@@ -49,8 +49,8 @@ Zylos reads `SKILL.md` for tool definitions. The digest API server runs as a sid
 ### Option 3: Standalone (no agent framework)
 
 ```bash
-git clone https://github.com/kevinho/ai-digest.git
-cd ai-digest
+git clone https://github.com/kevinho/clawfeed.git
+cd clawfeed
 npm install
 ```
 
@@ -125,7 +125,7 @@ handle /digest/api/* {
     reverse_proxy localhost:8767
 }
 handle_path /digest/* {
-    root * /path/to/ai-digest/web
+    root * /path/to/clawfeed/web
     file_server
 }
 ```

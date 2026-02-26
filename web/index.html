@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClawFeed</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀️</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { overflow-x: hidden; }
@@ -87,9 +88,28 @@
   .digest-card .title { font-size: 14px; font-weight: 500; }
   .digest-card .excerpt { font-size: 12px; color: #666; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; }
   .digest-card .time-badge { font-size: 12px; color: #666; background: #141414; padding: 3px 10px; border-radius: 6px; border: 1px solid #222; white-space: nowrap; }
-  .digest-viewer { display: none; background: #1a1a1a; border: 1px solid #282828; border-radius: 12px; padding: 24px; margin-top: 16px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; font-size: 14px; max-height: 80vh; overflow-y: auto; overflow-x: hidden; }
+  .digest-viewer { display: none; background: #1a1a1a; border: 1px solid #282828; border-radius: 12px; padding: 24px; margin-top: 16px; line-height: 1.7; word-break: break-word; overflow-wrap: break-word; font-size: 14px; max-height: 80vh; overflow-y: auto; overflow-x: hidden; }
   .digest-viewer a { color: #58a6ff; text-decoration: none; }
   .digest-viewer a:hover { text-decoration: underline; }
+  .digest-viewer p { margin-bottom: 8px; }
+  .digest-viewer h1, .digest-viewer h2, .digest-viewer h3, .digest-viewer h4 { margin: 20px 0 8px; line-height: 1.4; color: #e8e8e8; }
+  .digest-viewer h3 { font-size: 1.05em; border-bottom: 1px solid #282828; padding-bottom: 6px; }
+  .digest-viewer blockquote { border-left: 3px solid #444; margin: 6px 0 10px; padding: 4px 12px; color: #888; font-size: 0.9em; }
+  .digest-viewer hr { border: none; border-top: 1px solid #2a2a2a; margin: 20px 0; }
+  .digest-viewer strong { color: #f0f0f0; font-weight: 600; }
+  .digest-viewer em { color: #bbb; }
+  .digest-viewer ul, .digest-viewer ol { margin: 4px 0 10px 20px; }
+  .digest-viewer li { margin: 3px 0; }
+  .digest-viewer code { background: #252525; padding: 1px 6px; border-radius: 3px; font-size: 0.88em; color: #79c0ff; font-family: monospace; }
+  .digest-viewer pre { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0; }
+  .digest-viewer pre code { background: none; padding: 0; color: #e0e0e0; }
+  body.light .digest-viewer h1, body.light .digest-viewer h2, body.light .digest-viewer h3 { color: #111; }
+  body.light .digest-viewer h3 { border-color: #e0e0e0; }
+  body.light .digest-viewer blockquote { border-color: #ccc; color: #666; }
+  body.light .digest-viewer hr { border-color: #e0e0e0; }
+  body.light .digest-viewer strong { color: #111; }
+  body.light .digest-viewer code { background: #e8f0fe; color: #0055cc; }
+  body.light .digest-viewer pre { background: #f5f5f5; border-color: #ddd; }
   .back-btn { display: inline-block; margin-bottom: 16px; padding: 6px 14px; background: #2a2a2a; border: 1px solid #444; border-radius: 6px; color: #aaa; cursor: pointer; font-size: 13px; }
   .back-btn:hover { color: #fff; border-color: #666; }
   .empty { color: #555; text-align: center; padding: 40px; font-size: 14px; }
@@ -747,30 +767,48 @@ async function loadDigest(id) {
     const resp = await fetch(`${API}/digests/${id}`);
     const d = await resp.json();
     let text = d.content;
+
     // Hide private sections for non-logged-in users
     if (!currentUser) {
       text = text.replace(/🧹\s*建议取关[\s\S]*?(?=\n(?:💤|🔍|👀|📰|🔖|🔥|—|$))/g, '');
       text = text.replace(/🔖\s*Bookmarks\s*精选[\s\S]*?(?=\n(?:💤|🔍|👀|📰|🧹|🔥|—|$))/g, '');
     }
+
     await loadMarkedUrls();
 
-    text = text.replace(/(https?:\/\/x\.com\/[^\s<)]+)/g, (match) => {
-      const clean = match.split('?')[0];
-      const isMarked = markedUrls.has(clean);
-      const markId = markedUrls.get(clean);
-      let markHtml;
-      if (currentUser) {
-        markHtml = isMarked
-          ? `<span class="mark-btn marked" onclick="doUnmark('${clean}', ${markId}, this)">${t('marked')}</span>`
-          : `<span class="mark-btn" onclick="doMark('${clean}', this)">${t('mark')}</span>`;
-      } else {
-        markHtml = `<span class="mark-btn disabled" onclick="showToast('${t('loginToMark')}')" title="${t('loginToMark')}">${t('mark')}</span>`;
-      }
-      return `<a href="${match}" target="_blank">${match}</a>${markHtml}`;
-    });
-    text = text.replace(/(https?:\/\/(?!x\.com)[^\s<)]+)/g, '<a href="$1" target="_blank">$1</a>');
+    // Replace decorative ═══ dividers with standard markdown HR so they render cleanly
+    text = text.replace(/^[═]{10,}\s*$/gm, '\n---\n');
 
-    viewer.innerHTML = `<div class="back-btn" onclick="renderList()">${t('back')}</div>\n${text}`;
+    // Configure marked.js: custom link renderer for target=_blank + x.com mark buttons
+    const renderer = new marked.Renderer();
+    renderer.link = function(href, title, text) {
+      const titleAttr = title ? ` title="${title}"` : '';
+      let html = `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+      if (href && href.includes('x.com')) {
+        const clean = href.split('?')[0];
+        const isMarked = markedUrls.has(clean);
+        const markId = markedUrls.get(clean);
+        let markHtml;
+        if (currentUser) {
+          markHtml = isMarked
+            ? `<span class="mark-btn marked" onclick="doUnmark('${clean}', ${markId}, this)">${t('marked')}</span>`
+            : `<span class="mark-btn" onclick="doMark('${clean}', this)">${t('mark')}</span>`;
+        } else {
+          markHtml = `<span class="mark-btn disabled" onclick="showToast('${t('loginToMark')}')" title="${t('loginToMark')}">${t('mark')}</span>`;
+        }
+        html += markHtml;
+      }
+      return html;
+    };
+
+    marked.use({
+      renderer,
+      gfm: true,
+      breaks: true,
+    });
+
+    const html = marked.parse(text);
+    viewer.innerHTML = `<div class="back-btn" onclick="renderList()">${t('back')}</div>${html}`;
     viewer.style.display = 'block';
   } catch (e) {
     viewer.innerHTML = `<div class="back-btn" onclick="renderList()">${t('back')}</div>\n<div class="empty">${t('cantLoad')}</div>`;

@@ -8,6 +8,7 @@ import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import { lookup } from 'dns/promises';
 import { isIP } from 'net';
 import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getSourceByTypeConfig, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack, listSubscriptions, subscribe, unsubscribe, bulkSubscribe, isSubscribed, createFeedback, getUserFeedback, getAllFeedback, replyToFeedback, updateFeedbackStatus, markFeedbackRead, getUnreadFeedbackCount } from './db.mjs';
+import { translateText, translateRssItems } from './translate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -31,6 +32,7 @@ const API_KEY = env.API_KEY || process.env.API_KEY || '';
 const ALLOWED_ORIGINS = (env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || 'localhost').split(',').map(o => o.trim()).filter(Boolean);
 const PORT = process.env.DIGEST_PORT || env.DIGEST_PORT || 8767;
 const OAUTH_STATE_SECRET = env.OAUTH_STATE_SECRET || process.env.OAUTH_STATE_SECRET || SESSION_SECRET || API_KEY || 'dev-state-secret';
+const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '';
 const MAX_BODY_BYTES = 1024 * 1024;
 const DB_PATH = process.env.DIGEST_DB || join(ROOT, 'data', 'digest.db');
 
@@ -621,9 +623,52 @@ const server = createServer(async (req, res) => {
 
       try {
         const result = await resolveSourceUrl(url);
+        // Optionally translate RSS preview items when translate=true and API key is configured
+        if (body.translate && DEEPSEEK_API_KEY && result.preview && result.preview.length > 0) {
+          try {
+            result.preview = await translateRssItems(DEEPSEEK_API_KEY, result.preview);
+          } catch (e) {
+            console.error('[translate] preview translation failed:', e.message);
+          }
+        }
         return json(res, result);
       } catch (e) {
         return json(res, { error: e.message || 'cannot resolve' }, 422);
+      }
+    }
+
+    // ── Translate endpoint ──
+    // POST /api/translate — translate text or RSS items to Chinese via DeepSeek
+    if (req.method === 'POST' && path === '/api/translate') {
+      // Require user session OR API key
+      if (!req.user) {
+        const authHeader = req.headers.authorization || '';
+        const bearerKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+        if (!API_KEY || bearerKey !== API_KEY) return json(res, { error: 'login or API key required' }, 401);
+      }
+      if (!DEEPSEEK_API_KEY) return json(res, { error: 'translation service not configured' }, 503);
+
+      const body = await parseBody(req);
+      const targetLang = body.targetLang || '中文';
+      const model = body.model || undefined;
+
+      try {
+        // Single text translation
+        if (typeof body.text === 'string') {
+          const translated = await translateText(DEEPSEEK_API_KEY, body.text, { targetLang, model });
+          return json(res, { translated });
+        }
+        // Batch RSS items translation
+        if (Array.isArray(body.items)) {
+          if (body.items.length === 0) return json(res, { items: [] });
+          if (body.items.length > 50) return json(res, { error: 'too many items, max 50' }, 400);
+          const items = await translateRssItems(DEEPSEEK_API_KEY, body.items, { model });
+          return json(res, { items });
+        }
+        return json(res, { error: 'text (string) or items (array) required' }, 400);
+      } catch (e) {
+        console.error('[translate] error:', e.message);
+        return json(res, { error: e.message }, 500);
       }
     }
 

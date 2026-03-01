@@ -31,13 +31,13 @@ echo ""
 
 # 生成 cron 命令
 # 格式: 分 时 日 月 周
-CRON_4H="0 */4 * * *  cd \"$ROOT_DIR\" && $NODE_BIN scripts/fetch-and-digest.mjs --type 4h >> \"$LOG_DIR/digest-4h.log\" 2>&1"
+CRON_4H="0 4,12,16,20 * * *  cd \"$ROOT_DIR\" && $NODE_BIN scripts/fetch-and-digest.mjs --type 4h >> \"$LOG_DIR/digest-4h.log\" 2>&1"
 CRON_DAILY="0 8   * * *  cd \"$ROOT_DIR\" && $NODE_BIN scripts/fetch-and-digest.mjs --type daily >> \"$LOG_DIR/digest-daily.log\" 2>&1"
 CRON_WEEKLY="0 9   * * 1  cd \"$ROOT_DIR\" && $NODE_BIN scripts/fetch-and-digest.mjs --type weekly >> \"$LOG_DIR/digest-weekly.log\" 2>&1"
 
 echo "即将安装以下定时任务:"
 echo ""
-echo "  每4小时    → $CRON_4H"
+echo "  4h简报(04/12/16/20) → $CRON_4H"
 echo "  每天 08:00 → $CRON_DAILY"
 echo "  每周一09:00→ $CRON_WEEKLY"
 echo ""

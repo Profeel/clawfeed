@@ -15,6 +15,8 @@
   body.light .tab { background: #e8e8e8; border-color: #ccc; color: #666; }
   body.light .tab:hover { border-color: #999; color: #333; }
   body.light .tab.active { background: #ddd; border-color: #999; color: #111; }
+  body.light #generateBtn { background: #f0f4ff; border-color: #ccc; color: #2563eb; }
+  body.light #generateBtn:hover { border-color: #999; background: #e0e8ff; }
   body.light .digest-card { background: #fff; border-color: #ddd; }
   body.light .digest-card:hover { background: #fafafa; border-color: #bbb; }
   body.light .digest-card .excerpt { color: #888; }
@@ -205,6 +207,30 @@
   .pack-detail-source .info { flex: 1; }
   .pack-detail-source .info .name { font-size: 14px; font-weight: 500; }
   .pack-detail-source .info .type { font-size: 11px; color: #666; }
+  /* SMS Login Modal */
+  .sms-modal-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.75); display: flex; align-items: center; justify-content: center; }
+  .sms-modal { background: #1a1a1a; border: 1px solid #333; border-radius: 14px; padding: 28px 28px 24px; width: 340px; max-width: 92vw; position: relative; }
+  body.light .sms-modal { background: #fff; border-color: #ddd; }
+  .sms-modal h3 { font-size: 17px; font-weight: 600; margin-bottom: 20px; color: #eee; }
+  body.light .sms-modal h3 { color: #111; }
+  .sms-modal-close { position: absolute; top: 14px; right: 16px; background: none; border: none; color: #666; font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 4px; }
+  .sms-modal-close:hover { color: #ccc; background: #2a2a2a; }
+  body.light .sms-modal-close:hover { background: #f0f0f0; color: #333; }
+  .sms-field { margin-bottom: 14px; }
+  .sms-field label { display: block; font-size: 12px; color: #888; margin-bottom: 6px; }
+  .sms-field input { width: 100%; padding: 9px 12px; background: #111; border: 1px solid #333; border-radius: 8px; color: #eee; font-size: 14px; outline: none; transition: border-color .2s; }
+  body.light .sms-field input { background: #f5f5f5; border-color: #ccc; color: #333; }
+  .sms-field input:focus { border-color: #555; }
+  .sms-phone-row { display: flex; gap: 8px; align-items: flex-end; }
+  .sms-phone-row input { flex: 1; }
+  .sms-send-btn { flex-shrink: 0; padding: 9px 14px; background: #1a3a5a; border: 1px solid #2a6a9a; border-radius: 8px; color: #58a6ff; font-size: 13px; cursor: pointer; white-space: nowrap; transition: all .2s; }
+  .sms-send-btn:hover:not(:disabled) { background: #1f4a72; border-color: #4a9ad4; }
+  .sms-send-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .sms-verify-btn { width: 100%; padding: 10px; background: #1a3a5a; border: 1px solid #2a6a9a; border-radius: 8px; color: #58a6ff; font-size: 14px; cursor: pointer; margin-top: 4px; transition: all .2s; font-weight: 500; }
+  .sms-verify-btn:hover:not(:disabled) { background: #1f4a72; }
+  .sms-verify-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .sms-tip { font-size: 11px; color: #666; margin-top: 10px; text-align: center; }
+  .sms-error { font-size: 12px; color: #f04040; margin-top: 8px; min-height: 16px; }
 </style>
 </head>
 <body>
@@ -219,12 +245,19 @@
   </div>
   <p class="subtitle" id="subtitleText">AI NEWS DIGEST — powered by <a href="https://x.com/ZylosAI" target="_blank" rel="noopener" class="agent-name zylos">Jessie@ZylosAI</a>, <a href="https://x.com/OpenClaw" target="_blank" rel="noopener" class="agent-name openclaw">Lisa@OpenClaw</a></p>
   <p class="info-banner" id="infoBanner" style="color:#e8a838;font-size:0.85em;margin:-16px 0 16px 0;"></p>
-  <div class="tabs">
+  <div class="tabs" style="align-items:center;">
     <div class="tab active" data-type="4h">4H 简报</div>
     <div class="tab" data-type="daily">日报</div>
     <div class="tab" data-type="weekly">周报</div>
     <div class="tab" data-type="monthly">月报</div>
     <div class="tab" data-type="marks">📌 Mark 收藏</div>
+    <div id="generateBtnWrap" style="display:none;margin-left:auto;align-items:center;gap:6px;flex-shrink:0;">
+      <label style="display:flex;align-items:center;gap:3px;font-size:12px;color:#888;cursor:pointer;" title="深度模式">
+        <input type="checkbox" id="deepModeCheck" style="accent-color:#58a6ff;width:14px;height:14px;">
+        <span id="deepModeLabel">深度模式</span>
+      </label>
+      <button id="generateBtn" onclick="handleGenerateDigest()" style="padding:5px 12px;border-radius:6px;border:1px solid #444;background:#1a1a2e;color:#58a6ff;font-size:13px;cursor:pointer;transition:all .2s;white-space:nowrap;" title="手动触发生成">🔄 手动生成</button>
+    </div>
   </div>
   <div id="loginBanner" class="login-banner" style="display:none;">
     <span>💡 登录 Google 账号即可收藏文章、管理个人书签</span>
@@ -240,6 +273,28 @@
 <div class="changelog-overlay" id="changelogOverlay">
   <button class="changelog-close" onclick="hideChangelog()">✕</button>
   <div class="changelog-inner" id="changelogContent"></div>
+</div>
+
+<!-- SMS Login Modal -->
+<div id="smsModalOverlay" class="sms-modal-overlay" style="display:none;" onclick="handleSmsOverlayClick(event)">
+  <div class="sms-modal" role="dialog" aria-modal="true" aria-labelledby="smsModalTitle">
+    <button class="sms-modal-close" onclick="hideSmsModal()" aria-label="关闭">✕</button>
+    <h3 id="smsModalTitle">📱 手机号登录</h3>
+    <div class="sms-field">
+      <label for="smsPhone">手机号</label>
+      <div class="sms-phone-row">
+        <input type="tel" id="smsPhone" placeholder="请输入手机号" maxlength="11" autocomplete="tel" inputmode="numeric" onkeydown="handleSmsPhoneKey(event)" />
+        <button class="sms-send-btn" id="smsSendBtn" onclick="handleSendCode()" aria-label="发送验证码">发送验证码</button>
+      </div>
+    </div>
+    <div class="sms-field" id="smsCodeField" style="display:none;">
+      <label for="smsCode">验证码</label>
+      <input type="text" id="smsCode" placeholder="请输入6位验证码" maxlength="6" autocomplete="one-time-code" inputmode="numeric" onkeydown="handleSmsCodeKey(event)" />
+    </div>
+    <div class="sms-error" id="smsError"></div>
+    <button class="sms-verify-btn" id="smsVerifyBtn" onclick="handleVerifyCode()" style="display:none;">验证登录</button>
+    <div class="sms-tip">验证码有效期5分钟，每次登录自动注册</div>
+  </div>
 </div>
 
 <script>
@@ -327,6 +382,10 @@ const I18N = {
     feedbackSend: '发送', feedbackEmpty: '有什么想说的？我们会认真看每一条反馈 😊',
     feedbackSent: '✅ 已发送', feedbackNamePlaceholder: '名字（可选）',
     infoBanner: '🔥 感谢大家热情！线上版本今天会快速迭代修掉一些 bug，进 <a href="https://t.me/CocoAIxyz" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:underline;">TG 交流群</a>保持更新',
+    generateDigest: '🔄 手动生成', generateDigestTitle: '手动触发当前类型的 Digest 生成',
+    generating: '生成中...', generateSuccess: '✅ Digest 生成已触发', generateFail: '❌ 触发失败',
+    generateConfirm: '确认手动触发生成当前类型的 Digest？',
+    deepMode: '深度模式',
   },
   en: {
     title: '☀️ ClawFeed',
@@ -388,6 +447,10 @@ const I18N = {
     feedbackSend: 'Send', feedbackEmpty: 'Have something to say? We read every piece of feedback 😊',
     feedbackSent: '✅ Sent', feedbackNamePlaceholder: 'Name (optional)',
     infoBanner: '🔥 Thanks for the enthusiasm! We\'re shipping bug fixes today — join our <a href="https://t.me/CocoAIxyz" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:underline;">TG group</a> for updates',
+    generateDigest: '🔄 Generate', generateDigestTitle: 'Manually trigger digest generation for the current type',
+    generating: 'Generating...', generateSuccess: '✅ Digest generation triggered', generateFail: '❌ Trigger failed',
+    generateConfirm: 'Trigger digest generation for the current type?',
+    deepMode: 'Deep mode',
   }
 };
 
@@ -413,6 +476,10 @@ function applyLang() {
   document.querySelector('[data-type="marks"]').textContent = t('tabMarks');
   const banner = document.getElementById('loginBanner');
   if (banner) banner.querySelector('span').textContent = t('loginBanner');
+  const genBtn = document.getElementById('generateBtn');
+  if (genBtn && !genBtn.disabled) genBtn.textContent = t('generateDigest');
+  const deepLabel = document.getElementById('deepModeLabel');
+  if (deepLabel) deepLabel.textContent = t('deepMode');
   renderAuthBar();
 }
 
@@ -478,13 +545,105 @@ const API = (() => {
 
 let currentUser = null;
 
-let authEnabled = true;
+let authEnabled = false;
+let smsEnabled = false;
+
+// ── SMS Login Modal ──
+let smsCountdownTimer = null;
+
+const showSmsModal = () => {
+  document.getElementById('smsModalOverlay').style.display = 'flex';
+  document.getElementById('smsPhone').value = '';
+  document.getElementById('smsCode').value = '';
+  document.getElementById('smsError').textContent = '';
+  document.getElementById('smsCodeField').style.display = 'none';
+  document.getElementById('smsVerifyBtn').style.display = 'none';
+  document.getElementById('smsSendBtn').disabled = false;
+  document.getElementById('smsSendBtn').textContent = '发送验证码';
+  clearInterval(smsCountdownTimer);
+  setTimeout(() => document.getElementById('smsPhone').focus(), 50);
+};
+
+const hideSmsModal = () => {
+  document.getElementById('smsModalOverlay').style.display = 'none';
+  clearInterval(smsCountdownTimer);
+};
+
+const handleSmsOverlayClick = (e) => {
+  if (e.target === document.getElementById('smsModalOverlay')) hideSmsModal();
+};
+
+const handleSmsPhoneKey = (e) => { if (e.key === 'Enter') handleSendCode(); };
+const handleSmsCodeKey = (e) => { if (e.key === 'Enter') handleVerifyCode(); };
+
+const handleSendCode = async () => {
+  const phone = document.getElementById('smsPhone').value.trim();
+  const errEl = document.getElementById('smsError');
+  errEl.textContent = '';
+  if (!/^1[3-9]\d{9}$/.test(phone)) { errEl.textContent = '请输入正确的11位手机号'; return; }
+
+  const btn = document.getElementById('smsSendBtn');
+  btn.disabled = true;
+  btn.textContent = '发送中…';
+
+  try {
+    const resp = await fetch(`${API}/auth/sms/send`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { errEl.textContent = data.error || '发送失败'; btn.disabled = false; btn.textContent = '重新发送'; return; }
+
+    document.getElementById('smsCodeField').style.display = '';
+    document.getElementById('smsVerifyBtn').style.display = '';
+    setTimeout(() => document.getElementById('smsCode').focus(), 50);
+
+    let sec = 60;
+    btn.textContent = `${sec}s`;
+    smsCountdownTimer = setInterval(() => {
+      sec--;
+      if (sec <= 0) { clearInterval(smsCountdownTimer); btn.disabled = false; btn.textContent = '重新发送'; }
+      else { btn.textContent = `${sec}s`; }
+    }, 1000);
+  } catch (e) { errEl.textContent = '网络错误，请重试'; btn.disabled = false; btn.textContent = '重新发送'; }
+};
+
+const handleVerifyCode = async () => {
+  const phone = document.getElementById('smsPhone').value.trim();
+  const code = document.getElementById('smsCode').value.trim();
+  const errEl = document.getElementById('smsError');
+  errEl.textContent = '';
+  if (!/^\d{6}$/.test(code)) { errEl.textContent = '请输入6位验证码'; return; }
+
+  const btn = document.getElementById('smsVerifyBtn');
+  btn.disabled = true;
+  btn.textContent = '验证中…';
+
+  try {
+    const resp = await fetch(`${API}/auth/sms/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ phone, code }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      errEl.textContent = data.error || '验证失败';
+      btn.disabled = false; btn.textContent = '验证登录';
+      return;
+    }
+    hideSmsModal();
+    showToast('登录成功 🎉');
+    location.reload();
+  } catch (e) { errEl.textContent = '网络错误，请重试'; btn.disabled = false; btn.textContent = '验证登录'; }
+};
+
 async function checkAuth() {
   try {
     const cfg = await fetch(`${API}/auth/config`).then(r => r.json());
     authEnabled = !!cfg.authEnabled;
-  } catch { authEnabled = false; }
-  if (authEnabled) {
+    smsEnabled = !!cfg.smsEnabled;
+  } catch { authEnabled = false; smsEnabled = false; }
+  if (authEnabled || smsEnabled) {
     try {
       const r = await fetch(`${API}/auth/me`, { credentials: 'same-origin' });
       if (r.ok) {
@@ -495,8 +654,8 @@ async function checkAuth() {
   }
   renderAuthBar();
   updateMarkVisibility();
+  if (typeof updateGenerateBtn === 'function') updateGenerateBtn();
   if (currentUser && currentType === 'marks') renderMarks();
-  // Welcome toast for first-time login
   if (currentUser && !localStorage.getItem('digest_welcomed')) {
     localStorage.setItem('digest_welcomed', '1');
     setTimeout(() => showToast(t('welcomeToast')), 500);
@@ -521,9 +680,12 @@ function renderAuthBar() {
     </div>
   </div>`;
   if (currentUser) {
+    const avatarHtml = currentUser.avatar
+      ? `<img src="${currentUser.avatar}" alt="">`
+      : `<span style="width:32px;height:32px;border-radius:50%;background:#1a3a5a;border:1px solid #2a6a9a;display:inline-flex;align-items:center;justify-content:center;font-size:14px;">📱</span>`;
     bar.innerHTML = ghLangHtml() + sourcesBtn
       + `<div class="user-menu" onclick="document.getElementById('userDropdown').classList.toggle('show')">
-        <img src="${currentUser.avatar}" alt="">
+        ${avatarHtml}
         <span class="user-name">${currentUser.name}</span>
         <div id="userDropdown" class="user-dropdown">
           <a href="#" onclick="event.stopPropagation();showFeedInfo();return false;">📡 My Feed</a>
@@ -531,22 +693,27 @@ function renderAuthBar() {
         </div>
       </div>` + moreMenu;
   } else {
-    bar.innerHTML = ghLangHtml() + sourcesBtn
-      + (authEnabled ? `<a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}"><svg class="g-logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>${t('signIn')}</a>` : '')
-      + moreMenu;
+    const smsLoginBtn = smsEnabled ? `<button class="auth-btn" onclick="showSmsModal()" aria-label="手机号登录">📱 ${t('signIn')}</button>` : '';
+    const googleLoginBtn = authEnabled ? `<a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}"><svg class="g-logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>Google</a>` : '';
+    bar.innerHTML = ghLangHtml() + sourcesBtn + smsLoginBtn + googleLoginBtn + moreMenu;
   }
   const lt = document.getElementById('langToggle');
   if (lt) lt.onclick = (e) => { e.preventDefault(); e.stopPropagation(); setLang(lang === 'zh' ? 'en' : 'zh'); };
 }
 
 function updateMarkVisibility() {
-  // Always show marks tab — show login prompt when clicked if not logged in
-  // Show/hide login banner
   const banner = document.getElementById('loginBanner');
   if (banner) {
-    if (authEnabled && !currentUser && !localStorage.getItem('digest_banner_dismissed')) {
+    if ((authEnabled || smsEnabled) && !currentUser && !localStorage.getItem('digest_banner_dismissed')) {
       banner.style.display = '';
-      document.getElementById('bannerLogin').href = `${API}/auth/google?origin=${encodeURIComponent(location.origin)}`;
+      const bannerLoginEl = document.getElementById('bannerLogin');
+      if (smsEnabled) {
+        bannerLoginEl.href = '#';
+        bannerLoginEl.onclick = (e) => { e.preventDefault(); showSmsModal(); };
+      } else {
+        bannerLoginEl.href = `${API}/auth/google?origin=${encodeURIComponent(location.origin)}`;
+        bannerLoginEl.onclick = null;
+      }
     } else {
       banner.style.display = 'none';
     }
@@ -563,8 +730,9 @@ async function doLogout() {
   currentUser = null;
   renderAuthBar();
   updateMarkVisibility();
+  if (typeof updateGenerateBtn === 'function') updateGenerateBtn();
   if (currentType === 'marks') {
-    renderList(); // Will show login prompt
+    renderList();
   }
 }
 
@@ -825,10 +993,16 @@ function getMarkTopic(m) {
 async function renderMarks() {
   const list = document.getElementById('list');
   if (!currentUser) {
-    list.innerHTML = authEnabled ? `<div class="login-prompt">
+    const hasAnyAuth = authEnabled || smsEnabled;
+    const loginBtnHtml = smsEnabled
+      ? `<button class="auth-btn" onclick="showSmsModal()" style="margin-top:4px;">📱 ${t('signIn')}</button>`
+      : authEnabled
+        ? `<a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}"><svg class="g-logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>${t('signIn')}</a>`
+        : '';
+    list.innerHTML = hasAnyAuth ? `<div class="login-prompt">
       <div class="icon">🔐</div>
       <div class="msg">${t('loginPromptTitle')}<br>${t('loginPromptDesc')}</div>
-      <a class="auth-btn" href="${API}/auth/google?origin=${encodeURIComponent(location.origin)}"><svg class="g-logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>${t('signIn')}</a>
+      ${loginBtnHtml}
     </div>` : `<div class="login-prompt"><div class="icon">🔐</div><div class="msg">${t('loginPromptTitle')}</div></div>`;
     return;
   }
@@ -1604,8 +1778,49 @@ document.querySelectorAll('.tab').forEach(tab => {
     location.hash = currentType;
     document.getElementById('viewer').style.display = 'none';
     renderList();
+    updateGenerateBtn();
   };
 });
+
+const updateGenerateBtn = () => {
+  const wrap = document.getElementById('generateBtnWrap');
+  if (!wrap) return;
+  const isDigestTab = ['4h', 'daily', 'weekly', 'monthly'].includes(currentType);
+  wrap.style.display = (currentUser && isDigestTab) ? 'flex' : 'none';
+};
+
+const handleGenerateDigest = async () => {
+  const btn = document.getElementById('generateBtn');
+  if (!btn || btn.disabled) return;
+  const digestType = currentType;
+  if (!['4h', 'daily', 'weekly', 'monthly'].includes(digestType)) return;
+
+  const deep = document.getElementById('deepModeCheck')?.checked || false;
+  btn.disabled = true;
+  btn.textContent = t('generating');
+  btn.style.opacity = '0.6';
+
+  try {
+    const resp = await fetch(`${API}/digests/generate`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: digestType, deep }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showToast(t('generateSuccess'));
+    } else {
+      showToast(`${t('generateFail')}: ${data.error || resp.status}`);
+    }
+  } catch (e) {
+    showToast(`${t('generateFail')}: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = t('generateDigest');
+    btn.style.opacity = '1';
+  }
+};
 
 if (location.hash) {
   const h = location.hash.substring(1);

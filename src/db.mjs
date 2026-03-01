@@ -102,6 +102,24 @@ export function getDb(dbPath) {
   } catch (e) {
     if (!e.message.includes('duplicate column')) console.error('Migration 009:', e.message);
   }
+  // Migration 010: SMS auth (phone column + sms_otps table)
+  try {
+    const sql10 = readFileSync(join(ROOT, 'migrations', '010_sms_auth.sql'), 'utf8');
+    for (const stmt of sql10.split(';').map(s => s.trim()).filter(Boolean)) {
+      try { _db.exec(stmt + ';'); } catch (e) {
+        if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) throw e;
+      }
+    }
+  } catch (e) {
+    if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) console.error('Migration 010:', e.message);
+  }
+  // Migration 011: pushed_items table for dedup across digests
+  try {
+    const sql11 = readFileSync(join(ROOT, 'migrations', '011_pushed_items.sql'), 'utf8');
+    _db.exec(sql11);
+  } catch (e) {
+    if (!e.message.includes('already exists')) console.error('Migration 011:', e.message);
+  }
   // Backfill slugs for existing users
   _backfillSlugs(_db);
   return _db;
@@ -240,7 +258,7 @@ export function getUserBySlug(db, slug) {
 
 export function listDigestsByUser(db, userId, { type, limit = 10, since } = {}) {
   // userId=null means system digests (user_id IS NULL), which we also show for any user feed
-  let sql = 'SELECT id, type, content, created_at FROM digests WHERE (user_id = ? OR user_id IS NULL)';
+  let sql = 'SELECT id, type, content, metadata, created_at FROM digests WHERE (user_id = ? OR user_id IS NULL)';
   const params = [userId];
   if (type) { sql += ' AND type = ?'; params.push(type); }
   if (since) { sql += ' AND created_at >= ?'; params.push(since); }
@@ -438,6 +456,44 @@ export function markFeedbackRead(db, id) {
 
 export function getUnreadFeedbackCount(db, userId) {
   return db.prepare("SELECT COUNT(*) as count FROM feedback WHERE user_id = ? AND reply IS NOT NULL AND read_at IS NULL").get(userId)?.count || 0;
+}
+
+// ── SMS Auth ──
+
+export function upsertPhoneUser(db, phone) {
+  const existing = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+  if (existing) return existing;
+
+  const name = `用户${phone.slice(-4)}`;
+  let slugBase = `u${phone.slice(-6)}`;
+  let candidate = slugBase;
+  let i = 1;
+  while (db.prepare('SELECT 1 FROM users WHERE slug = ?').get(candidate)) {
+    candidate = slugBase + i++;
+  }
+  db.prepare('INSERT INTO users (phone, name, slug) VALUES (?, ?, ?)').run(phone, name, candidate);
+  const newUser = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+  db.prepare('INSERT OR IGNORE INTO user_subscriptions (user_id, source_id) SELECT ?, id FROM sources WHERE is_public = 1').run(newUser.id);
+  return newUser;
+}
+
+export function createSmsOtp(db, phone, code, expiresAt) {
+  db.prepare('UPDATE sms_otps SET used = 1 WHERE phone = ? AND used = 0').run(phone);
+  const result = db.prepare('INSERT INTO sms_otps (phone, code, expires_at) VALUES (?, ?, ?)').run(phone, code, expiresAt);
+  return result.lastInsertRowid;
+}
+
+export function verifySmsOtp(db, phone, code) {
+  const otp = db.prepare(
+    "SELECT * FROM sms_otps WHERE phone = ? AND code = ? AND used = 0 AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1"
+  ).get(phone, code);
+  if (!otp) return false;
+  db.prepare('UPDATE sms_otps SET used = 1 WHERE id = ?').run(otp.id);
+  return true;
+}
+
+export function cleanExpiredOtps(db) {
+  return db.prepare("DELETE FROM sms_otps WHERE expires_at < datetime('now', '-1 day')").run();
 }
 
 // ── Config ──

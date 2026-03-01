@@ -4,10 +4,11 @@ import https from 'https';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import { lookup } from 'dns/promises';
 import { isIP } from 'net';
-import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getSourceByTypeConfig, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack, listSubscriptions, subscribe, unsubscribe, bulkSubscribe, isSubscribed, createFeedback, getUserFeedback, getAllFeedback, replyToFeedback, updateFeedbackStatus, markFeedbackRead, getUnreadFeedbackCount } from './db.mjs';
+import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getSourceByTypeConfig, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack, listSubscriptions, subscribe, unsubscribe, bulkSubscribe, isSubscribed, createFeedback, getUserFeedback, getAllFeedback, replyToFeedback, updateFeedbackStatus, markFeedbackRead, getUnreadFeedbackCount, upsertPhoneUser, createSmsOtp, verifySmsOtp, cleanExpiredOtps } from './db.mjs';
 import { translateText, translateRssItems } from './translate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,14 @@ const ALLOWED_ORIGINS = (env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || '
 const PORT = process.env.DIGEST_PORT || env.DIGEST_PORT || 8767;
 const OAUTH_STATE_SECRET = env.OAUTH_STATE_SECRET || process.env.OAUTH_STATE_SECRET || SESSION_SECRET || API_KEY || 'dev-state-secret';
 const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '';
+const SMS_ACCESS_KEY_ID = env.SMS_ACCESS_KEY_ID || process.env.SMS_ACCESS_KEY_ID || '';
+const SMS_ACCESS_KEY_SECRET = env.SMS_ACCESS_KEY_SECRET || process.env.SMS_ACCESS_KEY_SECRET || '';
+const SMS_SIGN_NAME = env.SMS_SIGN_NAME || process.env.SMS_SIGN_NAME || '';
+const SMS_TEMPLATE_CODE = env.SMS_TEMPLATE_CODE || process.env.SMS_TEMPLATE_CODE || '';
 const MAX_BODY_BYTES = 1024 * 1024;
+
+// SMS rate limiter: phone → last send timestamp
+const smsRateLimit = new Map();
 const DB_PATH = process.env.DIGEST_DB || join(ROOT, 'data', 'digest.db');
 
 mkdirSync(join(ROOT, 'data'), { recursive: true });
@@ -82,8 +90,10 @@ function parseCookies(req) {
 }
 
 const COOKIE_NAME = process.env.COOKIE_NAME || env.COOKIE_NAME || 'session';
+const HTTPS_MODE = !!(env.HTTPS_MODE || process.env.HTTPS_MODE);
 function setSessionCookie(res, value, maxAge = 30 * 86400) {
-  const cookie = `${COOKIE_NAME}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+  const secure = HTTPS_MODE ? ' Secure;' : '';
+  const cookie = `${COOKIE_NAME}=${value}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=${maxAge}`;
   res.setHeader('Set-Cookie', cookie);
 }
 
@@ -160,6 +170,59 @@ async function assertSafeFetchUrl(rawUrl) {
   if (!resolved.length || resolved.some((r) => isPrivateOrSpecialIp(r.address))) {
     throw new Error('blocked host');
   }
+}
+
+// ── Aliyun SMS ──
+function encodeAliyun(str) {
+  return encodeURIComponent(String(str))
+    .replace(/\+/g, '%20')
+    .replace(/\*/g, '%2A')
+    .replace(/%7E/g, '~');
+}
+
+async function sendAliyunSms(phone, code) {
+  const params = {
+    AccessKeyId: SMS_ACCESS_KEY_ID,
+    Action: 'SendSms',
+    Format: 'JSON',
+    PhoneNumbers: phone,
+    SignName: SMS_SIGN_NAME,
+    SignatureMethod: 'HMAC-SHA1',
+    SignatureNonce: randomBytes(16).toString('hex'),
+    SignatureVersion: '1.0',
+    TemplateCode: SMS_TEMPLATE_CODE,
+    TemplateParam: JSON.stringify({ code }),
+    Timestamp: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+    Version: '2017-05-25',
+  };
+  const sortedKeys = Object.keys(params).sort();
+  const canonical = sortedKeys.map(k => `${encodeAliyun(k)}=${encodeAliyun(params[k])}`).join('&');
+  const stringToSign = `POST&${encodeAliyun('/')}&${encodeAliyun(canonical)}`;
+  const sig = createHmac('sha1', SMS_ACCESS_KEY_SECRET + '&').update(stringToSign).digest('base64');
+  params.Signature = sig;
+  const body = Object.entries(params).map(([k, v]) => `${encodeAliyun(k)}=${encodeAliyun(v)}`).join('&');
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'dysmsapi.aliyuncs.com',
+      path: '/',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          if (result.Code === 'OK') resolve(result);
+          else reject(new Error(`${result.Code}: ${result.Message}`));
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 // ── Google OAuth helpers ──
@@ -353,25 +416,71 @@ const server = createServer(async (req, res) => {
     const total = countDigestsByUser(db, user.id, { type });
     const BASE = 'https://clawfeed.kevinhe.io';
 
+    // Helper: parse structured items from digest metadata
+    function parseDigestItems(d) {
+      try {
+        const meta = JSON.parse(d.metadata || '{}');
+        if (Array.isArray(meta.items) && meta.items.length > 0) return meta.items;
+      } catch {}
+      return null;
+    }
+
+    // Helper: fallback — parse bullet items from markdown content
+    function parseBulletItems(content) {
+      const lines = content.split('\n');
+      const items = [];
+      for (const line of lines) {
+        const m = line.match(/^[•·-]\s*(?:\[([^\]]+)\]\s*[—–-]\s*)?(.+?)\s*\[链接\]\(([^)]+)\)\s*$/);
+        if (m) {
+          items.push({ title: m[1] || m[2].slice(0, 50), summary: m[2], url: m[3] });
+        }
+      }
+      return items.length > 0 ? items : null;
+    }
+
     if (format === 'json') {
-      // JSON Feed 1.1
+      // JSON Feed 1.1 — one item per article
+      const feedItems = [];
+      const seenUrls = new Set();
+      for (const d of digests) {
+        const ca = d.created_at;
+        const dt = ca.includes('+') ? ca : ca.replace(' ', 'T') + '+08:00';
+        const digestTitle = _digestTitle(d, ca);
+        const structured = parseDigestItems(d) || parseBulletItems(d.content);
+        if (structured) {
+          for (const item of structured) {
+            if (!item.url || seenUrls.has(item.url)) continue;
+            seenUrls.add(item.url);
+            const isHot = item.category === '重要动态';
+            const tag = isHot ? '🔥' : '📰';
+            feedItems.push({
+              id: item.url,
+              title: `${tag} ${item.title || digestTitle}`,
+              summary: item.summary || '',
+              content_html: `<p>${(item.summary || '').replace(/\n/g, '<br>')}</p>`
+                + `<p><small>📰 ${item.source || '-'}　·　${item.category || '-'}</small></p>`
+                + `<p><a href="${item.url}">阅读原文</a></p>`,
+              url: item.url,
+              date_published: dt,
+              tags: [item.category, item.source].filter(Boolean),
+            });
+          }
+        } else {
+          feedItems.push({
+            id: String(d.id),
+            title: digestTitle,
+            content_text: d.content,
+            date_published: dt,
+            url: `${BASE}/#digest-${d.id}`,
+          });
+        }
+      }
       const feed = {
         version: 'https://jsonfeed.org/version/1.1',
         title: `${user.name}'s ClawFeed`,
         home_page_url: BASE,
         feed_url: `${BASE}/feed/${slug}.json`,
-        items: digests.map(d => {
-          const ca = d.created_at;
-          const dt = ca.includes('+') ? ca : ca.replace(' ', 'T') + '+08:00';
-          const title = _digestTitle(d, ca);
-          return {
-            id: String(d.id),
-            title,
-            content_text: d.content,
-            date_published: dt,
-            url: `${BASE}/#digest-${d.id}`
-          };
-        })
+        items: feedItems,
       };
       res.writeHead(200, { 'Content-Type': 'application/feed+json; charset=utf-8' });
       res.end(JSON.stringify(feed));
@@ -379,16 +488,50 @@ const server = createServer(async (req, res) => {
     }
 
     if (format === 'rss') {
-      // RSS 2.0
-      const escXml = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-      let items = '';
+      // RSS 2.0 — one <item> per article
+      const escXml = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      let itemsXml = '';
+      const seenUrls = new Set();
       for (const d of digests) {
         const ca = d.created_at;
         const dt = new Date(ca.includes('+') ? ca : ca.replace(' ', 'T') + '+08:00');
-        const title = _digestTitle(d, ca);
-        items += `<item><title>${escXml(title)}</title><link>${BASE}/#digest-${d.id}</link><guid isPermaLink="false">${d.id}</guid><pubDate>${dt.toUTCString()}</pubDate><description>${escXml(d.content.slice(0, 2000))}</description></item>\n`;
+        const digestTitle = _digestTitle(d, ca);
+        const structured = parseDigestItems(d) || parseBulletItems(d.content);
+        if (structured) {
+          for (const item of structured) {
+            if (!item.url || seenUrls.has(item.url)) continue;
+            seenUrls.add(item.url);
+            const isHot = item.category === '重要动态';
+            const tag = isHot ? '🔥' : '📰';
+            const descHtml = `<p>${escXml(item.summary || '')}</p>`
+              + `<p><small>${escXml(item.source || '-')}　·　${escXml(item.category || '-')}</small></p>`;
+            itemsXml += `<item>`
+              + `<title>${escXml(`${tag} ${item.title || digestTitle}`)}</title>`
+              + `<link>${escXml(item.url)}</link>`
+              + `<guid isPermaLink="true">${escXml(item.url)}</guid>`
+              + `<pubDate>${dt.toUTCString()}</pubDate>`
+              + `<description>${escXml(descHtml)}</description>`
+              + (item.category ? `<category>${escXml(item.category)}</category>` : '')
+              + (item.source ? `<category>${escXml(item.source)}</category>` : '')
+              + `</item>\n`;
+          }
+        } else {
+          itemsXml += `<item>`
+            + `<title>${escXml(digestTitle)}</title>`
+            + `<link>${BASE}/#digest-${d.id}</link>`
+            + `<guid isPermaLink="false">${d.id}</guid>`
+            + `<pubDate>${dt.toUTCString()}</pubDate>`
+            + `<description>${escXml(d.content.slice(0, 2000))}</description>`
+            + `</item>\n`;
+        }
       }
-      const rss = `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0"><channel><title>${escXml(user.name)}'s ClawFeed</title><link>${BASE}</link><description>ClawFeed Feed</description>\n${items}</channel></rss>`;
+      const rss = `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>`
+        + `<title>${escXml(user.name)}'s ClawFeed</title>`
+        + `<link>${BASE}</link>`
+        + `<description>ClawFeed AI 资讯精选</description>`
+        + `<language>zh-CN</language>`
+        + `<atom:link href="https://lotamate.com/feed/${slug}.rss" rel="self" type="application/rss+xml"/>`
+        + `\n${itemsXml}</channel></rss>`;
       res.writeHead(200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
       res.end(rss);
       return;
@@ -426,7 +569,8 @@ const server = createServer(async (req, res) => {
     // GET /api/auth/config — tells frontend if auth is available
     if (req.method === 'GET' && path === '/api/auth/config') {
       const authEnabled = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
-      return json(res, { authEnabled });
+      const smsEnabled = !!(SMS_ACCESS_KEY_ID && SMS_ACCESS_KEY_SECRET && SMS_SIGN_NAME && SMS_TEMPLATE_CODE);
+      return json(res, { authEnabled, smsEnabled });
     }
 
     // GET /api/auth/google
@@ -513,6 +657,58 @@ const server = createServer(async (req, res) => {
       return json(res, { ok: true });
     }
 
+    // ── SMS Auth endpoints ──
+
+    // POST /api/auth/sms/send — send OTP to phone number
+    if (req.method === 'POST' && path === '/api/auth/sms/send') {
+      const smsEnabled = !!(SMS_ACCESS_KEY_ID && SMS_ACCESS_KEY_SECRET && SMS_SIGN_NAME && SMS_TEMPLATE_CODE);
+      if (!smsEnabled) return json(res, { error: 'SMS auth not configured' }, 503);
+
+      const body = await parseBody(req);
+      const phone = (body.phone || '').trim().replace(/\s/g, '');
+      if (!/^1[3-9]\d{9}$/.test(phone)) return json(res, { error: '请输入正确的手机号' }, 400);
+
+      // Rate limit: 1 request per phone per 60s
+      const lastSent = smsRateLimit.get(phone);
+      if (lastSent && Date.now() - lastSent < 60000) {
+        const wait = Math.ceil((60000 - (Date.now() - lastSent)) / 1000);
+        return json(res, { error: `请等待 ${wait} 秒后再试` }, 429);
+      }
+
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+
+      try {
+        await sendAliyunSms(phone, code);
+        createSmsOtp(db, phone, code, expiresAt);
+        smsRateLimit.set(phone, Date.now());
+        cleanExpiredOtps(db);
+        return json(res, { ok: true });
+      } catch (e) {
+        console.error('[SMS] send failed:', e.message);
+        return json(res, { error: '短信发送失败，请稍后重试' }, 500);
+      }
+    }
+
+    // POST /api/auth/sms/verify — verify OTP and create session
+    if (req.method === 'POST' && path === '/api/auth/sms/verify') {
+      const body = await parseBody(req);
+      const phone = (body.phone || '').trim().replace(/\s/g, '');
+      const code = (body.code || '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) return json(res, { error: '手机号格式错误' }, 400);
+      if (!/^\d{6}$/.test(code)) return json(res, { error: '验证码格式错误' }, 400);
+
+      const valid = verifySmsOtp(db, phone, code);
+      if (!valid) return json(res, { error: '验证码错误或已过期' }, 401);
+
+      const user = upsertPhoneUser(db, phone);
+      const sessionId = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 30 * 86400000).toISOString();
+      createSession(db, { id: sessionId, userId: user.id, expiresAt });
+      setSessionCookie(res, sessionId);
+      return json(res, { ok: true, user: { id: user.id, name: user.name, slug: user.slug } });
+    }
+
     // ── Digest endpoints (public) ──
 
     if (req.method === 'GET' && path === '/api/digests') {
@@ -536,6 +732,32 @@ const server = createServer(async (req, res) => {
       const body = await parseBody(req);
       const result = createDigest(db, body);
       return json(res, result, 201);
+    }
+
+    // ── Trigger fetch-and-digest manually ──
+    if (req.method === 'POST' && path === '/api/digests/generate') {
+      const authHeader = req.headers.authorization || '';
+      const bearerKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const body = await parseBody(req);
+      const apiKeyOk = API_KEY && bearerKey === API_KEY;
+      const userOk = !!req.user;
+      if (!apiKeyOk && !userOk) return json(res, { error: 'not authenticated' }, 401);
+
+      const digestType = body.type || '4h';
+      if (!['4h', 'daily', 'weekly', 'monthly'].includes(digestType)) {
+        return json(res, { error: 'type must be 4h|daily|weekly|monthly' }, 400);
+      }
+      const args = ['scripts/fetch-and-digest.mjs', '--type', digestType];
+      if (body.deep) args.push('--deep');
+
+      const scriptPath = join(ROOT, 'scripts', 'fetch-and-digest.mjs');
+      if (!existsSync(scriptPath)) {
+        return json(res, { error: 'fetch-and-digest.mjs not found' }, 500);
+      }
+
+      const child = spawn(process.execPath, args, { cwd: ROOT, stdio: 'ignore', detached: true });
+      child.unref();
+      return json(res, { ok: true, message: `${digestType} digest generation started (pid: ${child.pid})` }, 202);
     }
 
     // ── Marks endpoints (auth required) ──
@@ -908,6 +1130,31 @@ const server = createServer(async (req, res) => {
     json(res, { error: e.message }, 500);
   }
 });
+
+// Periodic WAL checkpoint (every 5 minutes) to prevent data loss
+const WAL_CHECKPOINT_INTERVAL = 5 * 60 * 1000;
+const checkpointTimer = setInterval(() => {
+  try { db.pragma('wal_checkpoint(PASSIVE)'); } catch {}
+}, WAL_CHECKPOINT_INTERVAL);
+
+// Run checkpoint once at startup to merge any pending WAL data
+try { db.pragma('wal_checkpoint(PASSIVE)'); } catch {}
+
+// Graceful shutdown: close DB properly so WAL data is persisted
+const handleShutdown = (signal) => {
+  console.log(`\n${signal} received, shutting down...`);
+  clearInterval(checkpointTimer);
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.close();
+    console.log('Database closed cleanly.');
+  } catch (e) {
+    console.error('Error closing database:', e.message);
+  }
+  process.exit(0);
+};
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`🚀 ClawFeed API running on http://127.0.0.1:${PORT}`);

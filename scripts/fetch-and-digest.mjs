@@ -923,6 +923,28 @@ async function generateDigest(allItems, digestType) {
     } catch {}
   }
   if (!structuredItems) {
+    const objRe = /\{[^{}]*"title"\s*:\s*"[^"]*"[^{}]*"url"\s*:\s*"[^"]*"[^{}]*"summary"\s*:\s*"[^"]*"[^{}]*\}/g;
+    const matches = rawContent.match(objRe);
+    if (matches?.length > 0) {
+      const rescued = [];
+      for (const m of matches) {
+        try {
+          const obj = JSON.parse(m);
+          if (obj.title && obj.url && obj.summary) rescued.push(obj);
+        } catch {
+          try {
+            const obj = JSON.parse(fixLlmJsonQuotes(m));
+            if (obj.title && obj.url && obj.summary) rescued.push(obj);
+          } catch {}
+        }
+      }
+      if (rescued.length > 0) {
+        log(`⚠️  JSON 整体解析失败，逐条提取恢复了 ${rescued.length} 条`);
+        structuredItems = rescued;
+      }
+    }
+  }
+  if (!structuredItems) {
     log(`⚠️  JSON 解析失败，回退纯文本。原始内容前 200 字: ${rawContent.slice(0, 200)}`);
     return { content: rawContent, metadata: {} };
   }
@@ -1114,12 +1136,13 @@ async function generateDeepSummaries(digestContent, allItems) {
 function tryRescueJsonItems(text) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim();
-  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return null;
+  if (!/[\[{]/.test(trimmed)) return null;
   const baseCandidates = [
     trimmed,
     trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim(),
     trimmed.replace(/^[\s\S]*?(?=\[)/, '').replace(/\][^}\]]*$/, ']').trim(),
-  ];
+    trimmed.replace(/^[\s\S]*?(?=\{)/, '').replace(/\}[^}\]]*$/, '}').trim(),
+  ].filter(Boolean);
   const candidates = [];
   for (const c of baseCandidates) {
     candidates.push(c);

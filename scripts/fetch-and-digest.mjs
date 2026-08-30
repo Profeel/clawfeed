@@ -27,6 +27,11 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHmac, createHash } from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import {
+  needsZhTranslation,
+  translateFeishuItems,
+  translateFeishuText,
+} from '../src/feishu-translation.mjs';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -52,6 +57,7 @@ const PROXY_URL = env.HTTP_PROXY || env.HTTPS_PROXY || env.http_proxy || env.htt
   || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy || '';
 const FEISHU_WEBHOOK = env.FEISHU_WEBHOOK || process.env.FEISHU_WEBHOOK || '';
 const FEISHU_SECRET = env.FEISHU_SECRET || process.env.FEISHU_SECRET || '';
+const TRANSLATE_API_KEY = env.TRANSLATE_API_KEY || process.env.TRANSLATE_API_KEY || DEEPSEEK_API_KEY;
 const RSSHUB_URL = (env.RSSHUB_URL || process.env.RSSHUB_URL || '').replace(/\/+$/, '');
 const MAX_ARTICLE_AGE_HOURS = parseInt(env.MAX_ARTICLE_AGE_HOURS || process.env.MAX_ARTICLE_AGE_HOURS || '72', 10);
 
@@ -251,38 +257,93 @@ function buildHeaderCard(items, meta) {
   };
 }
 
+async function translateItemsToZh(items) {
+  const pendingCount = items.filter((item) =>
+    needsZhTranslation(item.title) || needsZhTranslation(item.summary)
+  ).length;
+  if (!pendingCount) return items;
+
+  log(`正在将飞书内容译成中文（${pendingCount}/${items.length} 条含英文）...`);
+  const zhItems = await translateFeishuItems(items, {
+    apiKey: TRANSLATE_API_KEY,
+    requestTranslation: async (payload) => {
+      const result = await callDeepSeek([
+        {
+          role: 'system',
+          content: '你是新闻译者。把标题和摘要译成通顺的简体中文。保留公司名、产品名、人名等专有名词，但正文、动作和解释必须使用中文。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]',
+        },
+        { role: 'user', content: JSON.stringify(payload) },
+      ], 4000, TRANSLATE_API_KEY);
+      if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
+      const message = result.choices?.[0]?.message || {};
+      return (message.content || message.reasoning_content || '').trim();
+    },
+    onRetry: async ({ attempt, remaining, error }) => {
+      const reason = error?.message || `仍有 ${remaining.length} 个字段不是中文`;
+      warn(`飞书中文翻译第 ${attempt} 次未完成，准备重试: ${reason}`);
+      await sleep(attempt * 1000);
+    },
+  });
+  log('✓ 飞书中文翻译完成并通过中文门禁');
+  return zhItems;
+}
+
+async function translateTextToZh(text) {
+  return translateFeishuText(text, {
+    apiKey: TRANSLATE_API_KEY,
+    requestTranslation: async (content) => {
+      const result = await callDeepSeek([
+        { role: 'system', content: '把用户文本完整译成简体中文。保留链接和专有名词，但所有正文必须使用中文。只输出译文，不要解释。' },
+        { role: 'user', content: String(content).slice(0, 3500) },
+      ], 2000, TRANSLATE_API_KEY);
+      if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
+      const message = result.choices?.[0]?.message || {};
+      return (message.content || message.reasoning_content || '').trim();
+    },
+    onRetry: async ({ attempt, error }) => {
+      warn(`飞书纯文本翻译第 ${attempt} 次未完成，准备重试: ${error?.message || '译文不是中文'}`);
+      await sleep(attempt * 1000);
+    },
+  });
+}
+
 // Send each article as an individual Feishu card
 async function sendFeishuArticles(items, meta) {
   if (!FEISHU_WEBHOOK || !items?.length) return;
 
-  log(`\n正在推送 ${items.length} 条到飞书...`);
+  const zhItems = await translateItemsToZh(items);
+  log(`\n正在推送 ${zhItems.length} 条到飞书...`);
 
-  const headerSent = await postFeishu(buildHeaderCard(items, meta));
+  const headerSent = await postFeishu(buildHeaderCard(zhItems, meta));
   if (headerSent) process.stdout.write('  ✓ 目录卡片\n');
   await sleep(600);
 
   let ok = 0;
-  for (let i = 0; i < items.length; i++) {
-    const card = buildArticleCard(items[i], i + 1, items.length);
+  const sentItems = [];
+  for (let i = 0; i < zhItems.length; i++) {
+    const card = buildArticleCard(zhItems[i], i + 1, zhItems.length);
     const sent = await postFeishu(card);
     if (sent) {
       ok++;
-      process.stdout.write(`  ✓ [${i + 1}/${items.length}] ${items[i].title?.slice(0, 30) || '-'}\n`);
+      sentItems.push(items[i]);
+      process.stdout.write(`  ✓ [${i + 1}/${zhItems.length}] ${zhItems[i].title?.slice(0, 30) || '-'}\n`);
     } else {
-      process.stdout.write(`  ✗ [${i + 1}/${items.length}] 推送失败\n`);
+      process.stdout.write(`  ✗ [${i + 1}/${zhItems.length}] 推送失败\n`);
     }
-    if (i < items.length - 1) await sleep(600);
+    if (i < zhItems.length - 1) await sleep(600);
   }
 
-  log(`✅ 飞书推送完成（${ok}/${items.length}）`);
+  log(`✅ 飞书推送完成（${ok}/${zhItems.length}）`);
+  return sentItems;
 }
 
 // Fallback: send whole content as plain text (used when no structured items)
 async function sendFeishuNotification(content) {
   if (!FEISHU_WEBHOOK) return;
-  const text = content.length > 4000
-    ? content.slice(0, 4000) + '\n\n…（内容已截断）'
-    : content;
+  const zhContent = await translateTextToZh(content);
+  const text = zhContent.length > 4000
+    ? zhContent.slice(0, 4000) + '\n\n…（内容已截断）'
+    : zhContent;
   const msgBody = { msg_type: 'text', content: { text }, ...buildFeishuSign() };
   try {
     const resp = await postJson(FEISHU_WEBHOOK, msgBody);
@@ -676,7 +737,7 @@ function isItemPushedBefore(history, item) {
 }
 
 // ── DeepSeek Digest Generator ──────────────────────────────────────────────
-function callDeepSeek(messages, maxTokens = 4096) {
+function callDeepSeek(messages, maxTokens = 4096, apiKey = DEEPSEEK_API_KEY) {
   const payload = JSON.stringify({
     model: 'deepseek-ai/DeepSeek-V3',
     messages,
@@ -691,7 +752,7 @@ function callDeepSeek(messages, maxTokens = 4096) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Length': Buffer.byteLength(payload),
       },
     }, (res) => {
@@ -1314,8 +1375,7 @@ async function main() {
     let pushedItems = [];
     if (FEISHU_WEBHOOK) {
       if (metadata.items?.length > 0) {
-        await sendFeishuArticles(metadata.items, metadata);
-        pushedItems = metadata.items;
+        pushedItems = await sendFeishuArticles(metadata.items, metadata);
       } else {
         const rescued = tryRescueJsonItems(content);
         if (rescued) {
@@ -1329,8 +1389,7 @@ async function main() {
               hour: '2-digit', minute: '2-digit',
             }),
           };
-          await sendFeishuArticles(rescued, rescuedMeta);
-          pushedItems = rescued;
+          pushedItems = await sendFeishuArticles(rescued, rescuedMeta);
         } else {
           log('\n正在推送到飞书群机器人（纯文本模式）...');
           await sendFeishuNotification(content);

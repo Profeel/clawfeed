@@ -4,9 +4,54 @@ import assert from 'node:assert/strict';
 import {
   needsZhTranslation,
   parseTranslatedItems,
+  resolveTranslationProvider,
   translateFeishuItems,
   translateFeishuText,
 } from '../src/feishu-translation.mjs';
+
+test('prefers configured LLM translation provider and normalizes OpenRouter auto model', () => {
+  assert.deepEqual(resolveTranslationProvider({
+    llmApiKey: 'openrouter-key',
+    llmBaseUrl: 'https://openrouter.ai/api/v1/',
+    llmModel: 'openrouter/free-latest',
+    deepseekApiKey: 'siliconflow-key',
+  }), {
+    apiKey: 'openrouter-key',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'openrouter/free',
+    source: 'llm',
+  });
+});
+
+test('explicit translation provider overrides LLM provider', () => {
+  const provider = resolveTranslationProvider({
+    translateApiKey: 'translation-key',
+    translateBaseUrl: 'https://translation.example/v1/',
+    translateModel: 'stable-model',
+    llmApiKey: 'llm-key',
+    llmBaseUrl: 'https://openrouter.ai/api/v1',
+  });
+  assert.equal(provider.apiKey, 'translation-key');
+  assert.equal(provider.baseUrl, 'https://translation.example/v1');
+  assert.equal(provider.model, 'stable-model');
+  assert.equal(provider.source, 'translate');
+});
+
+test('normalizes OpenRouter auto model for explicit translation provider only', () => {
+  const openRouter = resolveTranslationProvider({
+    translateApiKey: 'translation-key',
+    translateBaseUrl: 'https://openrouter.ai/api/v1',
+    translateModel: 'openrouter/free-latest',
+  });
+  assert.equal(openRouter.model, 'openrouter/free');
+
+  const otherProvider = resolveTranslationProvider({
+    translateApiKey: 'translation-key',
+    translateBaseUrl: 'https://translation.example/v1',
+    translateModel: 'auto',
+  });
+  assert.equal(otherProvider.model, 'auto');
+});
 
 test('detects English prose but permits English proper nouns in Chinese copy', () => {
   assert.equal(needsZhTranslation('OpenAI launches GPT-5 with new coding features'), true);

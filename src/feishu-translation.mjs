@@ -21,6 +21,55 @@ const stripNonLanguageContent = (text) => String(text || '')
 
 const chineseCharCount = (text) => (String(text || '').match(/[\u3400-\u9fff]/g) || []).length;
 
+const normalizeProviderModel = (baseUrl, model, fallbackModel) => {
+  const configuredModel = model || fallbackModel;
+  return /openrouter/i.test(baseUrl) && /^(?:auto|openrouter\/free-latest)$/i.test(configuredModel)
+    ? 'openrouter/free'
+    : configuredModel;
+};
+
+export function resolveTranslationProvider({
+  translateApiKey = '',
+  translateBaseUrl = '',
+  translateModel = '',
+  llmApiKey = '',
+  llmBaseUrl = '',
+  llmModel = '',
+  deepseekApiKey = '',
+} = {}) {
+  const siliconFlow = {
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'deepseek-ai/DeepSeek-V3',
+  };
+
+  if (translateApiKey) {
+    const baseUrl = (translateBaseUrl || siliconFlow.baseUrl).replace(/\/+$/, '');
+    return {
+      apiKey: translateApiKey,
+      baseUrl,
+      model: normalizeProviderModel(baseUrl, translateModel, siliconFlow.model),
+      source: 'translate',
+    };
+  }
+
+  if (llmApiKey && llmBaseUrl) {
+    const baseUrl = llmBaseUrl.replace(/\/+$/, '');
+    return {
+      apiKey: llmApiKey,
+      baseUrl,
+      model: normalizeProviderModel(baseUrl, llmModel, /openrouter/i.test(baseUrl) ? 'openrouter/free' : siliconFlow.model),
+      source: 'llm',
+    };
+  }
+
+  return {
+    apiKey: deepseekApiKey,
+    baseUrl: siliconFlow.baseUrl,
+    model: siliconFlow.model,
+    source: 'deepseek',
+  };
+}
+
 export function needsZhTranslation(text) {
   const content = stripNonLanguageContent(text);
   if (!content) return false;

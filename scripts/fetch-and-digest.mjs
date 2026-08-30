@@ -29,6 +29,7 @@ import { createHmac, createHash } from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import {
   needsZhTranslation,
+  resolveTranslationProvider,
   translateFeishuItems,
   translateFeishuText,
 } from '../src/feishu-translation.mjs';
@@ -52,12 +53,23 @@ if (existsSync(envPath)) {
 
 const API_KEY = env.API_KEY || process.env.API_KEY || '';
 const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '';
+const LLM_BASE_URL = env.LLM_BASE_URL || process.env.LLM_BASE_URL || '';
+const LLM_MODEL = env.LLM_MODEL || process.env.LLM_MODEL || '';
+const LLM_API_KEY = env.LLM_API_KEY || process.env.LLM_API_KEY || '';
 const PORT = parseInt(env.DIGEST_PORT || process.env.DIGEST_PORT || '8767', 10);
 const PROXY_URL = env.HTTP_PROXY || env.HTTPS_PROXY || env.http_proxy || env.https_proxy
   || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy || '';
 const FEISHU_WEBHOOK = env.FEISHU_WEBHOOK || process.env.FEISHU_WEBHOOK || '';
 const FEISHU_SECRET = env.FEISHU_SECRET || process.env.FEISHU_SECRET || '';
-const TRANSLATE_API_KEY = env.TRANSLATE_API_KEY || process.env.TRANSLATE_API_KEY || DEEPSEEK_API_KEY;
+const TRANSLATION_PROVIDER = resolveTranslationProvider({
+  translateApiKey: env.TRANSLATE_API_KEY || process.env.TRANSLATE_API_KEY || '',
+  translateBaseUrl: env.TRANSLATE_BASE_URL || process.env.TRANSLATE_BASE_URL || '',
+  translateModel: env.TRANSLATE_MODEL || process.env.TRANSLATE_MODEL || '',
+  llmApiKey: LLM_API_KEY,
+  llmBaseUrl: LLM_BASE_URL,
+  llmModel: LLM_MODEL,
+  deepseekApiKey: DEEPSEEK_API_KEY,
+});
 const RSSHUB_URL = (env.RSSHUB_URL || process.env.RSSHUB_URL || '').replace(/\/+$/, '');
 const MAX_ARTICLE_AGE_HOURS = parseInt(env.MAX_ARTICLE_AGE_HOURS || process.env.MAX_ARTICLE_AGE_HOURS || '72', 10);
 
@@ -265,15 +277,15 @@ async function translateItemsToZh(items) {
 
   log(`正在将飞书内容译成中文（${pendingCount}/${items.length} 条含英文）...`);
   const zhItems = await translateFeishuItems(items, {
-    apiKey: TRANSLATE_API_KEY,
+    apiKey: TRANSLATION_PROVIDER.apiKey,
     requestTranslation: async (payload) => {
-      const result = await callDeepSeek([
+      const result = await callChatCompletion([
         {
           role: 'system',
           content: '你是新闻译者。把标题和摘要译成通顺的简体中文。保留公司名、产品名、人名等专有名词，但正文、动作和解释必须使用中文。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]',
         },
         { role: 'user', content: JSON.stringify(payload) },
-      ], 4000, TRANSLATE_API_KEY);
+      ], 4000, TRANSLATION_PROVIDER);
       if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
       const message = result.choices?.[0]?.message || {};
       return (message.content || message.reasoning_content || '').trim();
@@ -290,12 +302,12 @@ async function translateItemsToZh(items) {
 
 async function translateTextToZh(text) {
   return translateFeishuText(text, {
-    apiKey: TRANSLATE_API_KEY,
+    apiKey: TRANSLATION_PROVIDER.apiKey,
     requestTranslation: async (content) => {
-      const result = await callDeepSeek([
+      const result = await callChatCompletion([
         { role: 'system', content: '把用户文本完整译成简体中文。保留链接和专有名词，但所有正文必须使用中文。只输出译文，不要解释。' },
         { role: 'user', content: String(content).slice(0, 3500) },
-      ], 2000, TRANSLATE_API_KEY);
+      ], 2000, TRANSLATION_PROVIDER);
       if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
       const message = result.choices?.[0]?.message || {};
       return (message.content || message.reasoning_content || '').trim();
@@ -737,22 +749,27 @@ function isItemPushedBefore(history, item) {
 }
 
 // ── DeepSeek Digest Generator ──────────────────────────────────────────────
-function callDeepSeek(messages, maxTokens = 4096, apiKey = DEEPSEEK_API_KEY) {
+function callChatCompletion(messages, maxTokens, { apiKey, baseUrl, model }) {
   const payload = JSON.stringify({
-    model: 'deepseek-ai/DeepSeek-V3',
+    model,
     messages,
     temperature: 0.7,
     max_tokens: maxTokens,
   });
 
+  const endpoint = new URL(`${baseUrl.replace(/\/+$/, '')}/chat/completions`);
+
   return new Promise((resolve, reject) => {
     const req = https.request({
-      hostname: 'api.siliconflow.cn',
-      path: '/v1/chat/completions',
+      hostname: endpoint.hostname,
+      port: endpoint.port || 443,
+      path: `${endpoint.pathname}${endpoint.search}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://clawfeed.kevinhe.io',
+        'X-Title': 'ClawFeed Digest',
         'Content-Length': Buffer.byteLength(payload),
       },
     }, (res) => {
@@ -767,6 +784,14 @@ function callDeepSeek(messages, maxTokens = 4096, apiKey = DEEPSEEK_API_KEY) {
     req.on('error', reject);
     req.write(payload);
     req.end();
+  });
+}
+
+function callDeepSeek(messages, maxTokens = 4096) {
+  return callChatCompletion(messages, maxTokens, {
+    apiKey: DEEPSEEK_API_KEY,
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'deepseek-ai/DeepSeek-V3',
   });
 }
 

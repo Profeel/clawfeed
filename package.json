@@ -13,6 +13,7 @@
     "digest:daily:deep": "node scripts/fetch-and-digest.mjs --type daily --deep",
     "digest:weekly": "node scripts/fetch-and-digest.mjs --type weekly",
     "lint": "eslint src/",
+    "test:unit": "node --test test/*.test.mjs",
     "test": "bash test/e2e.sh"
   },
   "devDependencies": {

@@ -27,6 +27,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      - name: Run unit tests
+        run: npm run test:unit
       - name: Start server & run e2e tests
         run: |
           # Create data directory and test DB

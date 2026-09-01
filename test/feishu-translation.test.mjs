@@ -64,6 +64,18 @@ test('detects English prose but permits English proper nouns in Chinese copy', (
   assert.equal(needsZhTranslation('AI boom 来袭'), true);
   assert.equal(needsZhTranslation('AI News'), true);
   assert.equal(needsZhTranslation('Python SDK 发布新版本'), false);
+  assert.equal(needsZhTranslation('新款智���手机可检测隐藏摄像头'), true);
+});
+
+test('rewrites corrupted Chinese fields before Feishu delivery', async () => {
+  const result = await translateFeishuItems([
+    { title: '智能手机检测隐藏摄像头', summary: '新款智���手机通过光谱分析识别隐藏设备。' },
+  ], {
+    apiKey: 'test-key',
+    requestTranslation: async () =>
+      '[{"i":0,"title":"智能手机检测隐藏摄像头","summary":"新款智能手机通过光谱分析识别隐藏设备。"}]',
+  });
+  assert.equal(result[0].summary, '新款智能手机通过光谱分析识别隐藏设备。');
 });
 
 test('parses JSON returned inside a markdown fence', () => {

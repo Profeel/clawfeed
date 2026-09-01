@@ -71,6 +71,9 @@ export function resolveTranslationProvider({
 }
 
 export function needsZhTranslation(text) {
+  if (/\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(String(text || ''))) {
+    return true;
+  }
   const content = stripNonLanguageContent(text);
   if (!content) return false;
 

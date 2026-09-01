@@ -15,7 +15,7 @@
  *
  * 需要 .env 中配置:
  *   API_KEY          — ClawFeed 服务 API Key
- *   DEEPSEEK_API_KEY — SiliconFlow DeepSeek API Key
+ *   DIGEST_* / LLM_* / DEEPSEEK_API_KEY — 至少配置一组摘要 LLM
  *
  * --deep 模式: 对 Digest 精选的每篇文章抓取原文，生成 250 字中文深度摘要
  */
@@ -33,6 +33,11 @@ import {
   translateFeishuItems,
   translateFeishuText,
 } from '../src/feishu-translation.mjs';
+import {
+  completeWithProviderFallback,
+  extractCompletionText,
+  resolveDigestProviders,
+} from '../src/digest-resilience.mjs';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -56,6 +61,15 @@ const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY ||
 const LLM_BASE_URL = env.LLM_BASE_URL || process.env.LLM_BASE_URL || '';
 const LLM_MODEL = env.LLM_MODEL || process.env.LLM_MODEL || '';
 const LLM_API_KEY = env.LLM_API_KEY || process.env.LLM_API_KEY || '';
+const DIGEST_PROVIDERS = resolveDigestProviders({
+  digestApiKey: env.DIGEST_API_KEY || process.env.DIGEST_API_KEY || '',
+  digestBaseUrl: env.DIGEST_BASE_URL || process.env.DIGEST_BASE_URL || '',
+  digestModel: env.DIGEST_MODEL || process.env.DIGEST_MODEL || '',
+  llmApiKey: LLM_API_KEY,
+  llmBaseUrl: LLM_BASE_URL,
+  llmModel: LLM_MODEL,
+  deepseekApiKey: DEEPSEEK_API_KEY,
+});
 const PORT = parseInt(env.DIGEST_PORT || process.env.DIGEST_PORT || '8767', 10);
 const PROXY_URL = env.HTTP_PROXY || env.HTTPS_PROXY || env.http_proxy || env.https_proxy
   || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy || '';
@@ -197,18 +211,25 @@ function buildFeishuSign() {
 
 async function postFeishu(card) {
   const body = { msg_type: 'interactive', card, ...buildFeishuSign() };
-  try {
-    const resp = await postJson(FEISHU_WEBHOOK, body);
-    const result = JSON.parse(resp.body);
-    if (result.code !== 0 && result.StatusCode !== 0) {
-      warn(`飞书推送失败: ${result.msg || result.StatusMessage || JSON.stringify(result)}`);
-      return false;
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await postJson(FEISHU_WEBHOOK, body);
+      const result = JSON.parse(resp.body);
+      if (resp.status >= 400 || (result.code !== 0 && result.StatusCode !== 0)) {
+        throw new Error(result.msg || result.StatusMessage || `HTTP ${resp.status}`);
+      }
+      return true;
+    } catch (e) {
+      lastError = e;
+      if (attempt < 3) {
+        warn(`飞书推送第 ${attempt} 次失败，准备重试: ${e.message}`);
+        await sleep(attempt * 1000);
+      }
     }
-    return true;
-  } catch (e) {
-    warn(`飞书推送异常: ${e.message}`);
-    return false;
   }
+  warn(`飞书推送失败: ${lastError?.message || '未知错误'}`);
+  return false;
 }
 
 // Build a card for a single article
@@ -287,8 +308,7 @@ async function translateItemsToZh(items) {
         { role: 'user', content: JSON.stringify(payload) },
       ], 4000, TRANSLATION_PROVIDER);
       if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
-      const message = result.choices?.[0]?.message || {};
-      return (message.content || message.reasoning_content || '').trim();
+      return extractCompletionText(result);
     },
     onRetry: async ({ attempt, remaining, error }) => {
       const reason = error?.message || `仍有 ${remaining.length} 个字段不是中文`;
@@ -309,8 +329,7 @@ async function translateTextToZh(text) {
         { role: 'user', content: String(content).slice(0, 3500) },
       ], 2000, TRANSLATION_PROVIDER);
       if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
-      const message = result.choices?.[0]?.message || {};
-      return (message.content || message.reasoning_content || '').trim();
+      return extractCompletionText(result);
     },
     onRetry: async ({ attempt, error }) => {
       warn(`飞书纯文本翻译第 ${attempt} 次未完成，准备重试: ${error?.message || '译文不是中文'}`);
@@ -320,7 +339,7 @@ async function translateTextToZh(text) {
 }
 
 // Send each article as an individual Feishu card
-async function sendFeishuArticles(items, meta) {
+async function sendFeishuArticles(items, meta, { onItemSent = () => {} } = {}) {
   if (!FEISHU_WEBHOOK || !items?.length) return;
 
   const zhItems = await translateItemsToZh(items);
@@ -332,20 +351,26 @@ async function sendFeishuArticles(items, meta) {
 
   let ok = 0;
   const sentItems = [];
+  const failedItems = [];
   for (let i = 0; i < zhItems.length; i++) {
     const card = buildArticleCard(zhItems[i], i + 1, zhItems.length);
     const sent = await postFeishu(card);
     if (sent) {
       ok++;
       sentItems.push(items[i]);
+      await onItemSent(items[i]);
       process.stdout.write(`  ✓ [${i + 1}/${zhItems.length}] ${zhItems[i].title?.slice(0, 30) || '-'}\n`);
     } else {
+      failedItems.push(items[i]);
       process.stdout.write(`  ✗ [${i + 1}/${zhItems.length}] 推送失败\n`);
     }
     if (i < zhItems.length - 1) await sleep(600);
   }
 
   log(`✅ 飞书推送完成（${ok}/${zhItems.length}）`);
+  if (!headerSent || failedItems.length > 0) {
+    throw new Error(`飞书推送未完整成功（目录 ${headerSent ? '成功' : '失败'}，文章 ${ok}/${zhItems.length}）`);
+  }
   return sentItems;
 }
 
@@ -357,17 +382,25 @@ async function sendFeishuNotification(content) {
     ? zhContent.slice(0, 4000) + '\n\n…（内容已截断）'
     : zhContent;
   const msgBody = { msg_type: 'text', content: { text }, ...buildFeishuSign() };
-  try {
-    const resp = await postJson(FEISHU_WEBHOOK, msgBody);
-    const result = JSON.parse(resp.body);
-    if (result.code === 0 || result.StatusCode === 0) {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await postJson(FEISHU_WEBHOOK, msgBody);
+      const result = JSON.parse(resp.body);
+      if (resp.status >= 400 || (result.code !== 0 && result.StatusCode !== 0)) {
+        throw new Error(result.msg || result.StatusMessage || `HTTP ${resp.status}`);
+      }
       log('✅ 飞书推送成功');
-    } else {
-      warn(`飞书推送失败: ${result.msg || result.StatusMessage || JSON.stringify(result)}`);
+      return;
+    } catch (e) {
+      lastError = e;
+      if (attempt < 3) {
+        warn(`飞书纯文本推送第 ${attempt} 次失败，准备重试: ${e.message}`);
+        await sleep(attempt * 1000);
+      }
     }
-  } catch (e) {
-    warn(`飞书推送异常: ${e.message}`);
   }
+  throw new Error(`飞书纯文本推送失败: ${lastError?.message || '未知错误'}`);
 }
 
 // POST to local ClawFeed API
@@ -776,22 +809,37 @@ function callChatCompletion(messages, maxTokens, { apiKey, baseUrl, model }) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { reject(new Error(`DeepSeek 响应解析失败: ${data.slice(0, 300)}`)); }
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode >= 400) {
+            reject(new Error(parsed.error?.message || parsed.message || `LLM HTTP ${res.statusCode}`));
+            return;
+          }
+          resolve(parsed);
+        } catch (error) {
+          if (error instanceof SyntaxError) reject(new Error(`LLM 响应解析失败: ${data.slice(0, 300)}`));
+          else reject(error);
+        }
       });
     });
-    req.setTimeout(120000, () => { req.destroy(); reject(new Error('DeepSeek 请求超时（120s）')); });
+    req.setTimeout(120000, () => { req.destroy(); reject(new Error('LLM 请求超时（120s）')); });
     req.on('error', reject);
     req.write(payload);
     req.end();
   });
 }
 
-function callDeepSeek(messages, maxTokens = 4096) {
-  return callChatCompletion(messages, maxTokens, {
-    apiKey: DEEPSEEK_API_KEY,
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'deepseek-ai/DeepSeek-V3',
+async function callDigestLlm(messages, maxTokens = 4096) {
+  return completeWithProviderFallback(DIGEST_PROVIDERS, {
+    request: (provider) => callChatCompletion(messages, maxTokens, provider),
+    onFailure: ({ provider, round, error }) => {
+      warn(`摘要模型 ${provider.source}:${provider.model} 第 ${round} 轮失败: ${error.message}`);
+    },
+    wait: async (round) => {
+      const delay = round * 1000;
+      warn(`摘要 provider 链将在 ${delay}ms 后自动重试`);
+      await sleep(delay);
+    },
   });
 }
 
@@ -927,6 +975,73 @@ function deduplicateItems(items) {
   return result;
 }
 
+function buildDigestFromItems(structuredItems, digestType, dateStr) {
+  const hotItems = structuredItems.filter(i => i.category === '重要动态').slice(0, 4);
+  const hotUrls = new Set(hotItems.map(i => i.url));
+  const otherItems = structuredItems.filter(i => i.category !== '重要动态' || !hotUrls.has(i.url));
+  const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
+  let markdown = `${icons[digestType] || '☀️'} AI 快报 | ${dateStr} CST\n\n`;
+  if (hotItems.length > 0) {
+    markdown += '🔥 重要动态\n';
+    for (const item of hotItems) markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
+    markdown += '\n';
+  }
+  if (otherItems.length > 0) {
+    markdown += '📰 精选资讯\n';
+    for (const item of otherItems) markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
+  }
+  return { content: markdown, metadata: { items: [...hotItems, ...otherItems], dateStr, digestType } };
+}
+
+const HOT_ITEM_RE = /融资|发布|收购|开源|突破|上市|GPT|Claude|Gemini|DeepSeek|Anthropic|OpenAI|\$\d|亿美元|万美元|launch|release|funding/i;
+
+function generateHeuristicDigest(allItems, digestType) {
+  const dateStr = new Date().toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+  const scored = allItems.map((item) => {
+    let score = 0;
+    if (item.pubDate) {
+      const publishedAt = new Date(item.pubDate).getTime();
+      if (!Number.isNaN(publishedAt)) score += Math.max(0, 48 - (Date.now() - publishedAt) / 3_600_000);
+    }
+    const text = `${item.title || ''} ${item.description || ''}`;
+    if (HOT_ITEM_RE.test(text)) score += 20;
+    if (item.description?.length > 40) score += 5;
+    if (item.url) score += 2;
+    return { item, score };
+  }).sort((a, b) => b.score - a.score);
+
+  const perSource = new Map();
+  const picked = [];
+  for (const { item } of scored) {
+    const source = item._sourceName || 'unknown';
+    const sourceCount = perSource.get(source) || 0;
+    if (sourceCount >= 2 || !item.title || !item.url) continue;
+    perSource.set(source, sourceCount + 1);
+    picked.push(item);
+    if (picked.length >= 12) break;
+  }
+
+  const structuredItems = picked.map((item) => {
+    const title = stripHtml(item.title).slice(0, 80);
+    let summary = stripHtml(item.description || '');
+    if (summary.length > 240) summary = `${summary.slice(0, 237)}…`;
+    if (!summary) summary = `${item._sourceName || '信息源'}更新：${title}`;
+    return {
+      title,
+      url: item.url,
+      summary,
+      category: HOT_ITEM_RE.test(`${item.title || ''} ${item.description || ''}`) ? '重要动态' : '精选资讯',
+      source: item._sourceName || '',
+    };
+  });
+  if (!structuredItems.length) throw new Error('兜底摘要失败：没有可用的标题和链接');
+  return buildDigestFromItems(structuredItems, digestType, dateStr);
+}
+
 async function generateDigest(allItems, digestType) {
   const TYPE_NAMES = { '4h': '4小时简报', daily: '日报', weekly: '周报', monthly: '月报' };
   const now = new Date();
@@ -970,13 +1085,13 @@ async function generateDigest(allItems, digestType) {
 
   const userPrompt = `以下是从 ${[...new Set(allItems.map(i => i._sourceName))].join('、')} 采集的 ${allItems.length} 条内容，请生成${TYPE_NAMES[digestType]}的 JSON 数组：\n\n${itemLines}`;
 
-  const result = await callDeepSeek([
+  const completion = await callDigestLlm([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
   ], 6000);
 
-  const rawContent = result.choices?.[0]?.message?.content?.trim();
-  if (!rawContent) throw new Error(result.error?.message || result.error?.msg || 'DeepSeek 返回空内容');
+  const rawContent = completion.content;
+  log(`摘要 provider 成功: ${completion.provider.source}:${completion.provider.model}`);
 
   // Parse structured JSON items — try multiple cleanup strategies
   let structuredItems = null;
@@ -1031,8 +1146,7 @@ async function generateDigest(allItems, digestType) {
     }
   }
   if (!structuredItems) {
-    log(`⚠️  JSON 解析失败，回退纯文本。原始内容前 200 字: ${rawContent.slice(0, 200)}`);
-    return { content: rawContent, metadata: {} };
+    throw new Error(`摘要 JSON 解析失败，原始内容前 200 字: ${rawContent.slice(0, 200)}`);
   }
 
   // Deduplicate items by URL and similar titles
@@ -1133,7 +1247,7 @@ async function fetchArticleText(url, maxChars = 12000) {
 async function summarizeArticle(title, url, sourceName, articleText) {
   if (!articleText || articleText.trim().length < 150) return null;
 
-  const result = await callDeepSeek([
+  const completion = await callDigestLlm([
     {
       role: 'system',
       content:
@@ -1149,7 +1263,7 @@ async function summarizeArticle(title, url, sourceName, articleText) {
     },
   ], 1024);
 
-  return result.choices?.[0]?.message?.content?.trim() || null;
+  return completion.content || null;
 }
 
 async function generateDeepSummaries(digestContent, allItems) {
@@ -1253,8 +1367,8 @@ async function main() {
     console.error('❌ 请在 .env 中设置 API_KEY');
     process.exit(1);
   }
-  if (!DEEPSEEK_API_KEY) {
-    console.error('❌ 请在 .env 中设置 DEEPSEEK_API_KEY');
+  if (!DIGEST_PROVIDERS.length) {
+    console.error('❌ 请配置 DIGEST_*、LLM_* 或 DEEPSEEK_API_KEY 作为摘要 provider');
     process.exit(1);
   }
 
@@ -1336,10 +1450,21 @@ async function main() {
     process.exit(0);
   }
 
-  // 3. Generate standard digest via DeepSeek
-  log('\n正在调用 DeepSeek 生成摘要（可能需要 20-60 秒）...');
-  let { content, metadata } = await generateDigest(dedupedItems, DIGEST_TYPE);
-  log(`✓ 摘要生成完成（${content.length} 字，${metadata.items?.length ?? 0} 条结构化条目）`);
+  // 3. Generate via the provider chain, then use a deterministic source-based
+  // fallback so a single model outage cannot stop the pipeline.
+  log(`\n正在调用摘要 provider 链生成摘要（${DIGEST_PROVIDERS.map(p => `${p.source}:${p.model}`).join(' → ')}）...`);
+  let content;
+  let metadata;
+  try {
+    ({ content, metadata } = await generateDigest(dedupedItems, DIGEST_TYPE));
+    log(`✓ 摘要生成完成（${content.length} 字，${metadata.items?.length ?? 0} 条结构化条目）`);
+  } catch (error) {
+    warn(`LLM 摘要全部失败: ${error.message}`);
+    warn('自动改用采集内容生成兜底简报；飞书中文门禁仍会在发送前校验全部条目');
+    ({ content, metadata } = generateHeuristicDigest(dedupedItems, DIGEST_TYPE));
+    metadata.fallback = true;
+    log(`✓ 兜底摘要生成完成（${content.length} 字，${metadata.items.length} 条）`);
+  }
 
   // 3.5. Post-generation dedup: filter DeepSeek output against push history
   if (pushDb && metadata.items?.length > 0) {
@@ -1400,7 +1525,11 @@ async function main() {
     let pushedItems = [];
     if (FEISHU_WEBHOOK) {
       if (metadata.items?.length > 0) {
-        pushedItems = await sendFeishuArticles(metadata.items, metadata);
+        pushedItems = await sendFeishuArticles(metadata.items, metadata, {
+          onItemSent: async (item) => {
+            if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
+          },
+        });
       } else {
         const rescued = tryRescueJsonItems(content);
         if (rescued) {
@@ -1414,7 +1543,11 @@ async function main() {
               hour: '2-digit', minute: '2-digit',
             }),
           };
-          pushedItems = await sendFeishuArticles(rescued, rescuedMeta);
+          pushedItems = await sendFeishuArticles(rescued, rescuedMeta, {
+            onItemSent: async (item) => {
+              if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
+            },
+          });
         } else {
           log('\n正在推送到飞书群机器人（纯文本模式）...');
           await sendFeishuNotification(content);
@@ -1422,10 +1555,10 @@ async function main() {
       }
     }
 
-    // 6. Record pushed items to history (prevents future duplicates)
+    // Successful cards are recorded as they are acknowledged so automatic
+    // retries do not resend an already delivered prefix.
     if (pushDb && pushedItems.length > 0) {
-      recordPushedItems(pushDb, pushedItems, DIGEST_TYPE);
-      log(`📝 已记录 ${pushedItems.length} 条推送到历史（防止后续重复）`);
+      log(`📝 已逐条记录 ${pushedItems.length} 条推送到历史（支持安全补跑）`);
     }
   } else {
     console.error('❌ 保存失败:', JSON.stringify(postRes));

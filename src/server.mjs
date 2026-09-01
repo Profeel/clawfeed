@@ -10,6 +10,7 @@ import { lookup } from 'dns/promises';
 import { isIP } from 'net';
 import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getSourceByTypeConfig, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack, listSubscriptions, subscribe, unsubscribe, bulkSubscribe, isSubscribed, createFeedback, getUserFeedback, getAllFeedback, replyToFeedback, updateFeedbackStatus, markFeedbackRead, getUnreadFeedbackCount, upsertPhoneUser, createSmsOtp, verifySmsOtp, cleanExpiredOtps } from './db.mjs';
 import { translateText, translateRssItems } from './translate.mjs';
+import { getDigestPushHealth } from './digest-resilience.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -34,6 +35,10 @@ const ALLOWED_ORIGINS = (env.ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || '
 const PORT = process.env.DIGEST_PORT || env.DIGEST_PORT || 8767;
 const OAUTH_STATE_SECRET = env.OAUTH_STATE_SECRET || process.env.OAUTH_STATE_SECRET || SESSION_SECRET || API_KEY || 'dev-state-secret';
 const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '';
+const FEISHU_WEBHOOK_CONFIGURED = !!(env.FEISHU_WEBHOOK || process.env.FEISHU_WEBHOOK);
+const DIGEST_HEALTH_MAX_AGE_HOURS = Number(
+  env.DIGEST_HEALTH_MAX_AGE_HOURS || process.env.DIGEST_HEALTH_MAX_AGE_HOURS || 8
+);
 const SMS_ACCESS_KEY_ID = env.SMS_ACCESS_KEY_ID || process.env.SMS_ACCESS_KEY_ID || '';
 const SMS_ACCESS_KEY_SECRET = env.SMS_ACCESS_KEY_SECRET || process.env.SMS_ACCESS_KEY_SECRET || '';
 const SMS_SIGN_NAME = env.SMS_SIGN_NAME || process.env.SMS_SIGN_NAME || '';
@@ -396,9 +401,19 @@ const server = createServer(async (req, res) => {
 
   // ── Health check (no auth required) ──
   if (req.method === 'GET' && (path === '/api/health' || path === '/health')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
-    return;
+    let lastPushedAt = null;
+    try {
+      lastPushedAt = db.prepare('SELECT MAX(pushed_at) AS last_pushed_at FROM pushed_items').get()?.last_pushed_at || null;
+    } catch {
+      // Older databases may not have the delivery-history migration yet.
+    }
+    const digestPush = getDigestPushHealth({
+      enabled: FEISHU_WEBHOOK_CONFIGURED,
+      lastPushedAt,
+      maxAgeHours: DIGEST_HEALTH_MAX_AGE_HOURS,
+    });
+    const status = ['stale', 'invalid'].includes(digestPush.status) ? 'degraded' : 'ok';
+    return json(res, { status, digestPush });
   }
 
   // ── Feed endpoints (public, before auth) ──

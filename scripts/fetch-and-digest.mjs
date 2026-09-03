@@ -232,32 +232,59 @@ async function postFeishu(card) {
   return false;
 }
 
-// Build a card for a single article
+function isValidHttpUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname.includes('.');
+  } catch {
+    return false;
+  }
+}
+
+function isPlaceholderText(text) {
+  const value = String(text || '').trim();
+  return !value || value === '-' || value === '#' || /^[.。…*]+$/.test(value);
+}
+
 function buildArticleCard(item, index, total) {
   const isHot = item.category === '重要动态';
   const tag = isHot ? '🔥' : '📰';
   const headerColor = isHot ? 'red' : 'turquoise';
-
+  const url = isValidHttpUrl(item.url) ? String(item.url).trim() : '';
+  const elements = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: item.summary || '暂无解读',
+      },
+    },
+    {
+      tag: 'note',
+      elements: [
+        { tag: 'plain_text', content: `${item.source || '-'}　·　${index}/${total}` },
+      ],
+    },
+  ];
+  if (url) {
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '阅读原文' },
+          type: 'primary',
+          url,
+        },
+      ],
+    });
+  }
   return {
     header: {
       title: { tag: 'plain_text', content: `${tag} ${item.title || '(无标题)'}` },
       template: headerColor,
     },
-    elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: item.summary || '暂无解读',
-        },
-      },
-      {
-        tag: 'note',
-        elements: [
-          { tag: 'lark_md', content: `${item.source || '-'}　·　[阅读原文](${item.url || '#'})　·　${index}/${total}` },
-        ],
-      },
-    ],
+    elements,
   };
 }
 
@@ -290,23 +317,35 @@ function buildHeaderCard(items, meta) {
   };
 }
 
-async function translateItemsToZh(items) {
-  const pendingCount = items.filter((item) =>
-    needsZhTranslation(item.title) || needsZhTranslation(item.summary)
-  ).length;
-  if (!pendingCount) return items;
+const FEISHU_TRANSLATE_PROMPT =
+  '你是新闻译者。把标题和摘要译成通顺的简体中文。' +
+  '保留公司名、产品名、人名等专有名词，但动词、解释和正文必须使用中文。' +
+  '标题如果几乎全是英文专有名词，必须补上中文动词，例如「发布 llm-gemini 0.34」。' +
+  '不要添加评论，不要翻译或改写 URL。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]';
 
-  log(`正在将飞书内容译成中文（${pendingCount}/${items.length} 条含英文）...`);
-  const zhItems = await translateFeishuItems(items, {
+function prepareItemForTranslation(item) {
+  const clean = (value, max) => String(value || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#8217;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+  return { ...item, title: clean(item.title, 60), summary: clean(item.summary, 160) };
+}
+
+async function translateChunkToZh(chunk) {
+  return translateFeishuItems(chunk.map(prepareItemForTranslation), {
     apiKey: TRANSLATION_PROVIDER.apiKey,
+    attempts: 4,
     requestTranslation: async (payload) => {
       const result = await callChatCompletion([
-        {
-          role: 'system',
-          content: '你是新闻译者。把标题和摘要译成通顺的简体中文。保留公司名、产品名、人名等专有名词，但正文、动作和解释必须使用中文。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]',
-        },
+        { role: 'system', content: FEISHU_TRANSLATE_PROMPT },
         { role: 'user', content: JSON.stringify(payload) },
-      ], 4000, TRANSLATION_PROVIDER);
+      ], 2500, TRANSLATION_PROVIDER);
       if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
       return extractCompletionText(result);
     },
@@ -316,6 +355,30 @@ async function translateItemsToZh(items) {
       await sleep(attempt * 1000);
     },
   });
+}
+
+async function translateItemsToZh(items) {
+  const pendingCount = items.filter((item) =>
+    needsZhTranslation(item.title) || needsZhTranslation(item.summary)
+  ).length;
+  if (!pendingCount) return items;
+
+  log(`正在将飞书内容译成中文（${pendingCount}/${items.length} 条含英文，每批 2 条）...`);
+  const zhItems = [];
+  const chunkSize = 2;
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    log(`  翻译 ${i + 1}-${Math.min(i + chunkSize, items.length)}/${items.length}...`);
+    try {
+      zhItems.push(...await translateChunkToZh(chunk));
+    } catch (error) {
+      if (chunk.length === 1) throw error;
+      warn(`小批次未过中文门禁，改为逐条翻译: ${error.message}`);
+      for (const item of chunk) {
+        zhItems.push(...await translateChunkToZh([item]));
+      }
+    }
+  }
   log('✓ 飞书中文翻译完成并通过中文门禁');
   return zhItems;
 }
@@ -445,8 +508,8 @@ function xmlAttr(block, tag, attr) {
   return m ? m[1].trim() : '';
 }
 
-async function fetchRss(url, limit = 20) {
-  const { body } = await httpFetch(url);
+async function fetchRss(url, limit = 20, timeout) {
+  const { body } = await httpFetch(url, timeout ? { timeout } : {});
   const items = [];
   const re = /<item[^>]*>([\s\S]*?)<\/item>|<entry[^>]*>([\s\S]*?)<\/entry>/gi;
   let m;
@@ -518,35 +581,14 @@ async function fetchReddit({ subreddit, sort = 'hot', limit = 20 } = {}) {
 // 需在 .env 中配置 RSSHUB_URL（如 http://localhost:1200）
 // Nitter 公共实例已于 2024 年被 Twitter/X 全面封锁，仅作降级备选
 
-const NITTER_INSTANCES = [
-  'https://nitter.privacydev.net',
-  'https://nitter.poast.org',
-  'https://nitter.1d4.us',
-  'https://nitter.moomoo.me',
-  'https://nitter.net',
-];
-
-async function fetchNitterRss(path, limit = 20) {
-  let lastError;
-  for (const instance of NITTER_INSTANCES) {
-    try {
-      const url = `${instance}${path}`;
-      const items = await fetchRss(url, limit);
-      if (items.length > 0) return items;
-    } catch (e) {
-      lastError = e;
-    }
-  }
-  return [];
-}
-
-const RSSHUB_RETRIES = 3;
-const RSSHUB_RETRY_DELAY = 5000;
+const RSSHUB_RETRIES = 1;
+const RSSHUB_RETRY_DELAY = 2000;
+const RSSHUB_FETCH_TIMEOUT = 25000;
 
 async function fetchRssHubWithRetry(path, limit = 20) {
   for (let attempt = 1; attempt <= RSSHUB_RETRIES; attempt++) {
     try {
-      const items = await fetchRss(`${RSSHUB_URL}${path}`, limit);
+      const items = await fetchRss(`${RSSHUB_URL}${path}`, limit, RSSHUB_FETCH_TIMEOUT);
       if (items.length > 0) return items;
       if (attempt < RSSHUB_RETRIES) {
         log(`RSSHub 返回空结果 (${path})，${RSSHUB_RETRY_DELAY / 1000}s 后重试 (${attempt}/${RSSHUB_RETRIES})`);
@@ -572,16 +614,9 @@ async function fetchTwitterFeed({ username, handle, limit = 20 } = {}) {
   if (RSSHUB_URL) {
     const items = await fetchRssHubWithRetry(`/twitter/user/${screenName}`, limit);
     if (items.length > 0) return items;
-  }
-
-  const nitterItems = await fetchNitterRss(`/${screenName}/rss`, limit);
-  if (nitterItems.length > 0) return nitterItems;
-
-  if (!RSSHUB_URL) {
-    warn(`Twitter/X 采集失败（@${screenName}）：未配置 RSSHUB_URL 且所有 Nitter 实例不可用。` +
-      ' 请在 .env 中设置 RSSHUB_URL（自建 RSSHub: https://docs.rsshub.app/deploy/）');
+    warn(`Twitter/X 采集失败（@${screenName}）：RSSHub 未返回数据`);
   } else {
-    warn(`Twitter/X 采集失败（@${screenName}）：RSSHub 和 Nitter 均无法获取数据`);
+    warn(`Twitter/X 采集失败（@${screenName}）：未配置 RSSHUB_URL`);
   }
   return [];
 }
@@ -595,16 +630,9 @@ async function fetchTwitterList({ url, limit = 20 } = {}) {
   if (RSSHUB_URL) {
     const items = await fetchRssHubWithRetry(`/twitter/list/${listId}`, limit);
     if (items.length > 0) return items;
-  }
-
-  const nitterItems = await fetchNitterRss(`/i/lists/${listId}/rss`, limit);
-  if (nitterItems.length > 0) return nitterItems;
-
-  if (!RSSHUB_URL) {
-    warn(`Twitter/X 列表采集失败（${listId}）：未配置 RSSHUB_URL 且所有 Nitter 实例不可用。` +
-      ' 请在 .env 中设置 RSSHUB_URL（自建 RSSHub: https://docs.rsshub.app/deploy/）');
+    warn(`Twitter/X 列表采集失败（${listId}）：RSSHub 未返回数据`);
   } else {
-    warn(`Twitter/X 列表采集失败（${listId}）：RSSHub 和 Nitter 均无法获取数据`);
+    warn(`Twitter/X 列表采集失败（${listId}）：未配置 RSSHUB_URL`);
   }
   return [];
 }
@@ -1116,7 +1144,7 @@ async function generateDigest(allItems, digestType) {
     try {
       const parsed = JSON.parse(candidate);
       const items = Array.isArray(parsed) ? parsed : [parsed];
-      const valid = items.filter(i => i.title && i.url && i.summary);
+      const valid = items.filter(i => i.title && i.summary && isValidHttpUrl(i.url) && !isPlaceholderText(i.title) && !isPlaceholderText(i.summary));
       if (valid.length > 0) {
         structuredItems = valid;
         break;
@@ -1131,11 +1159,11 @@ async function generateDigest(allItems, digestType) {
       for (const m of matches) {
         try {
           const obj = JSON.parse(m);
-          if (obj.title && obj.url && obj.summary) rescued.push(obj);
+          if (obj.title && obj.summary && isValidHttpUrl(obj.url) && !isPlaceholderText(obj.title)) rescued.push(obj);
         } catch {
           try {
             const obj = JSON.parse(fixLlmJsonQuotes(m));
-            if (obj.title && obj.url && obj.summary) rescued.push(obj);
+            if (obj.title && obj.summary && isValidHttpUrl(obj.url) && !isPlaceholderText(obj.title)) rescued.push(obj);
           } catch {}
         }
       }

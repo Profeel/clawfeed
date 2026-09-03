@@ -38,6 +38,13 @@ import {
   extractCompletionText,
   resolveDigestProviders,
 } from '../src/digest-resilience.mjs';
+import {
+  FEATURED_CATEGORY,
+  HOT_CATEGORY,
+  MAX_HOT_ITEMS,
+  isHotItem,
+  normalizeDigestCategories,
+} from '../src/digest-categories.mjs';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -247,7 +254,7 @@ function isPlaceholderText(text) {
 }
 
 function buildArticleCard(item, index, total) {
-  const isHot = item.category === '重要动态';
+  const isHot = isHotItem(item);
   const tag = isHot ? '🔥' : '📰';
   const headerColor = isHot ? 'red' : 'turquoise';
   const url = isValidHttpUrl(item.url) ? String(item.url).trim() : '';
@@ -290,13 +297,13 @@ function buildArticleCard(item, index, total) {
 
 // Build a summary header card
 function buildHeaderCard(items, meta) {
-  const hotCount = items.filter(i => i.category === '重要动态').length;
+  const hotCount = items.filter(isHotItem).length;
   const otherCount = items.length - hotCount;
   const typeLabels = { '4h': '4小时简报', daily: '日报', weekly: '周报', monthly: '月报' };
   const typeLabel = typeLabels[meta.digestType] || '简报';
 
-  const toc = items.map((item, n) => {
-    const tag = item.category === '重要动态' ? '🔥' : '·';
+  const toc = items.map((item) => {
+    const tag = isHotItem(item) ? '🔥' : '·';
     return `${tag} ${item.title}`;
   }).join('\n');
 
@@ -969,7 +976,7 @@ function deduplicateItems(items) {
     if (seen.has(normUrl)) {
       const existing = seen.get(normUrl);
       // Keep the one with higher category priority (重要动态 > 精选资讯)
-      if (item.category === '重要动态' && existing.category !== '重要动态') {
+      if (isHotItem(item) && !isHotItem(existing)) {
         seen.set(normUrl, item);
         const idx = result.indexOf(existing);
         if (idx !== -1) result[idx] = item;
@@ -981,7 +988,7 @@ function deduplicateItems(items) {
     let isDup = false;
     for (const [existUrl, existItem] of seen) {
       if (titlesAreSimilar(item.title, existItem.title)) {
-        if (item.category === '重要动态' && existItem.category !== '重要动态') {
+        if (isHotItem(item) && !isHotItem(existItem)) {
           seen.delete(existUrl);
           const idx = result.indexOf(existItem);
           if (idx !== -1) result[idx] = item;
@@ -1003,24 +1010,25 @@ function deduplicateItems(items) {
   return result;
 }
 
-function buildDigestFromItems(structuredItems, digestType, dateStr) {
-  const hotItems = structuredItems.filter(i => i.category === '重要动态').slice(0, 4);
-  const hotUrls = new Set(hotItems.map(i => i.url));
-  const otherItems = structuredItems.filter(i => i.category !== '重要动态' || !hotUrls.has(i.url));
+function buildDigestFromItems(structuredItems, digestType, dateStr, extraMeta = {}) {
+  const items = normalizeDigestCategories(structuredItems);
+  const hotItems = items.filter(isHotItem);
+  const otherItems = items.filter((item) => !isHotItem(item));
   const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
   let markdown = `${icons[digestType] || '☀️'} AI 快报 | ${dateStr} CST\n\n`;
   if (hotItems.length > 0) {
-    markdown += '🔥 重要动态\n';
+    markdown += `🔥 ${HOT_CATEGORY}\n`;
     for (const item of hotItems) markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
     markdown += '\n';
   }
   if (otherItems.length > 0) {
-    markdown += '📰 精选资讯\n';
+    markdown += `📰 ${FEATURED_CATEGORY}\n`;
     for (const item of otherItems) markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
   }
-  return { content: markdown, metadata: { items: [...hotItems, ...otherItems], dateStr, digestType } };
+  return { content: markdown, metadata: { items, dateStr, digestType, ...extraMeta } };
 }
 
+// Ranking signal only. Do not use this for category — brand names match almost every AI item.
 const HOT_ITEM_RE = /融资|发布|收购|开源|突破|上市|GPT|Claude|Gemini|DeepSeek|Anthropic|OpenAI|\$\d|亿美元|万美元|launch|release|funding/i;
 
 function generateHeuristicDigest(allItems, digestType) {
@@ -1053,7 +1061,7 @@ function generateHeuristicDigest(allItems, digestType) {
     if (picked.length >= 12) break;
   }
 
-  const structuredItems = picked.map((item) => {
+  const structuredItems = picked.map((item, index) => {
     const title = stripHtml(item.title).slice(0, 80);
     let summary = stripHtml(item.description || '');
     if (summary.length > 240) summary = `${summary.slice(0, 237)}…`;
@@ -1062,7 +1070,9 @@ function generateHeuristicDigest(allItems, digestType) {
       title,
       url: item.url,
       summary,
-      category: HOT_ITEM_RE.test(`${item.title || ''} ${item.description || ''}`) ? '重要动态' : '精选资讯',
+      // Score order is already highest first. Brand-name regex is too broad for
+      // category, so only the top N stay 重要动态 and the rest are 精选资讯.
+      category: index < MAX_HOT_ITEMS ? HOT_CATEGORY : FEATURED_CATEGORY,
       source: item._sourceName || '',
     };
   });
@@ -1093,12 +1103,12 @@ async function generateDigest(allItems, digestType) {
   "title": "中文标题（15字以内，动词开头，点明核心事件）",
   "url": "必须来自输入的真实链接，不可编造",
   "summary": "2-3 句话的 AI 简报，严格 ≤140 个汉字。第①句：谁做了什么（核心事实）。第②句：为什么重要/有何影响。第③句（可选）：行业启示或值得关注的延伸。不要用序号，用自然段落。语言简练有力，禁止空话套话。",
-  "category": "重要动态 | 精选资讯",
+  "category": "精选资讯",
   "source": "来源名称"
 }
 
 严格规则：
-1. 输出 10-15 条。"重要动态"≤4 条（仅限：大额融资 >$100M、重大产品发布、突破性研究、重要政策）
+1. 输出 10-15 条。默认 category 必须是「精选资讯」。「重要动态」最多 4 条，仅限大额融资 >$100M、重大产品发布、突破性研究或重要政策。活动预告、转发评论、招聘、营销和普通更新一律「精选资讯」
 2. summary 必须 ≤140 个汉字（约 3 句话）。每句话都必须有实际信息量，禁止出现"值得关注""引发热议"等空洞表述
 3. title 必须是动宾结构，如"OpenAI 发布 GPT-5"而非"关于 GPT-5 的发布"
 4. URL 必须完整且来自输入，不可编造或省略
@@ -1180,26 +1190,7 @@ async function generateDigest(allItems, digestType) {
   // Deduplicate items by URL and similar titles
   structuredItems = deduplicateItems(structuredItems);
 
-  // Build markdown from structured items (for web display)
-  const hotItems = structuredItems.filter(i => i.category === '重要动态');
-  const otherItems = structuredItems.filter(i => i.category !== '重要动态');
-  const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
-  let markdown = `${icons[digestType] || '☀️'} AI 快报 | ${dateStr} CST\n\n`;
-  if (hotItems.length > 0) {
-    markdown += `🔥 重要动态\n`;
-    for (const item of hotItems) {
-      markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-    }
-    markdown += '\n';
-  }
-  if (otherItems.length > 0) {
-    markdown += `📰 精选资讯\n`;
-    for (const item of otherItems) {
-      markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-    }
-  }
-
-  return { content: markdown, metadata: { items: structuredItems, dateStr, digestType } };
+  return buildDigestFromItems(structuredItems, digestType, dateStr);
 }
 
 // ── Deep mode: article fetch + per-article summarization ──────────────────
@@ -1500,22 +1491,13 @@ async function main() {
     metadata.items = metadata.items.filter(item => !isItemPushedBefore(pushHistory, item));
     if (metadata.items.length < beforeCount) {
       log(`二次去重: ${beforeCount} → ${metadata.items.length} 条（过滤已推送 ${beforeCount - metadata.items.length} 条）`);
-      // Rebuild markdown content from remaining items
       if (metadata.items.length > 0) {
-        const hotItems = metadata.items.filter(i => i.category === '重要动态');
-        const otherItems = metadata.items.filter(i => i.category !== '重要动态');
-        const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
-        let md = `${icons[DIGEST_TYPE] || '☀️'} AI 快报 | ${metadata.dateStr} CST\n\n`;
-        if (hotItems.length > 0) {
-          md += '🔥 重要动态\n';
-          for (const item of hotItems) md += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-          md += '\n';
-        }
-        if (otherItems.length > 0) {
-          md += '📰 精选资讯\n';
-          for (const item of otherItems) md += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-        }
-        content = md;
+        ({ content, metadata } = buildDigestFromItems(
+          metadata.items,
+          DIGEST_TYPE,
+          metadata.dateStr,
+          { fallback: metadata.fallback },
+        ));
       }
     }
   }

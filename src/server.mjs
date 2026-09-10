@@ -8,9 +8,10 @@ import { spawn } from 'child_process';
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import { lookup } from 'dns/promises';
 import { isIP } from 'net';
-import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getSourceByTypeConfig, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack, listSubscriptions, subscribe, unsubscribe, bulkSubscribe, isSubscribed, createFeedback, getUserFeedback, getAllFeedback, replyToFeedback, updateFeedbackStatus, markFeedbackRead, getUnreadFeedbackCount, upsertPhoneUser, createSmsOtp, verifySmsOtp, cleanExpiredOtps } from './db.mjs';
+import { getDb, listDigests, getDigest, createDigest, listMarks, createMark, deleteMark, getConfig, setConfig, upsertUser, createSession, getSession, deleteSession, listSources, getSource, createSource, updateSource, deleteSource, getSourceByTypeConfig, getUserBySlug, listDigestsByUser, countDigestsByUser, createPack, getPack, getPackBySlug, listPacks, incrementPackInstall, deletePack, listSubscriptions, subscribe, unsubscribe, bulkSubscribe, isSubscribed, createFeedback, getUserFeedback, getAllFeedback, replyToFeedback, updateFeedbackStatus, markFeedbackRead, getUnreadFeedbackCount, upsertPhoneUser, createSmsOtp, verifySmsOtp, cleanExpiredOtps, getUserChannel, upsertUserChannel, deleteUserChannel } from './db.mjs';
 import { translateText, translateRssItems } from './translate.mjs';
 import { getDigestPushHealth } from './digest-resilience.mjs';
+import { isFeishuWebhookUrl, maskFeishuWebhookUrl } from './feishu-translation.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -36,6 +37,7 @@ const PORT = process.env.DIGEST_PORT || env.DIGEST_PORT || 8767;
 const OAUTH_STATE_SECRET = env.OAUTH_STATE_SECRET || process.env.OAUTH_STATE_SECRET || SESSION_SECRET || API_KEY || 'dev-state-secret';
 const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '';
 const FEISHU_WEBHOOK_CONFIGURED = !!(env.FEISHU_WEBHOOK || process.env.FEISHU_WEBHOOK);
+const FEISHU_GROUP_URL = env.FEISHU_GROUP_URL || process.env.FEISHU_GROUP_URL || '';
 const DIGEST_HEALTH_MAX_AGE_HOURS = Number(
   env.DIGEST_HEALTH_MAX_AGE_HOURS || process.env.DIGEST_HEALTH_MAX_AGE_HOURS || 8
 );
@@ -560,6 +562,14 @@ const server = createServer(async (req, res) => {
     });
   }
 
+  if (req.method === 'GET' && path === '/feishu-group-qr.png') {
+    const file = join(ROOT, 'web', 'feishu-group-qr.png');
+    if (!existsSync(file)) { res.writeHead(404); res.end('not found'); return; }
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
+    res.end(readFileSync(file));
+    return;
+  }
+
   // SPA route: / and /pack/:slug serve frontend HTML
   if (req.method === 'GET' && (path === '/' || path.startsWith('/pack/'))) {
     try {
@@ -586,6 +596,100 @@ const server = createServer(async (req, res) => {
       const authEnabled = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
       const smsEnabled = !!(SMS_ACCESS_KEY_ID && SMS_ACCESS_KEY_SECRET && SMS_SIGN_NAME && SMS_TEMPLATE_CODE);
       return json(res, { authEnabled, smsEnabled });
+    }
+
+    if (req.method === 'GET' && path === '/api/connect') {
+      const cfg = getConfig(db);
+      const officialGroupUrl = FEISHU_GROUP_URL || cfg.feishu_group_url || cfg.FEISHU_GROUP_URL || '';
+      return json(res, {
+        officialGroupUrl,
+        officialGroupQr: existsSync(join(ROOT, 'web', 'feishu-group-qr.png')),
+        officialPushEnabled: FEISHU_WEBHOOK_CONFIGURED,
+      });
+    }
+
+    if (req.method === 'GET' && path === '/api/me/channel') {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const channel = getUserChannel(db, req.user.id);
+      return json(res, {
+        feishuEnabled: !!channel?.feishu_enabled && !!channel?.feishu_webhook,
+        feishuWebhook: channel?.feishu_webhook ? maskFeishuWebhookUrl(channel.feishu_webhook) : '',
+        hasSecret: !!channel?.feishu_secret,
+      });
+    }
+
+    if (req.method === 'PUT' && path === '/api/me/channel') {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const body = await parseBody(req);
+      const webhook = typeof body.feishuWebhook === 'string' ? body.feishuWebhook.trim() : undefined;
+      if (webhook && !isFeishuWebhookUrl(webhook)) {
+        return json(res, { error: '请填写有效的飞书自定义机器人 Webhook' }, 400);
+      }
+      const channel = upsertUserChannel(db, req.user.id, {
+        webhook,
+        secret: typeof body.feishuSecret === 'string' ? body.feishuSecret.trim() : undefined,
+        enabled: body.feishuEnabled,
+      });
+      return json(res, {
+        ok: true,
+        feishuEnabled: !!channel?.feishu_enabled && !!channel?.feishu_webhook,
+        feishuWebhook: channel?.feishu_webhook ? maskFeishuWebhookUrl(channel.feishu_webhook) : '',
+        hasSecret: !!channel?.feishu_secret,
+      });
+    }
+
+    if (req.method === 'DELETE' && path === '/api/me/channel') {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      deleteUserChannel(db, req.user.id);
+      return json(res, { ok: true });
+    }
+
+    if (req.method === 'POST' && path === '/api/me/channel/test') {
+      if (!req.user) return json(res, { error: 'login required' }, 401);
+      const channel = getUserChannel(db, req.user.id);
+      if (!channel?.feishu_webhook || !isFeishuWebhookUrl(channel.feishu_webhook)) {
+        return json(res, { error: '请先保存有效的飞书 Webhook' }, 400);
+      }
+      const sign = {};
+      if (channel.feishu_secret) {
+        const timestamp = Math.floor(Date.now() / 1000).toString();
+        sign.timestamp = timestamp;
+        sign.sign = createHmac('sha256', `${timestamp}\n${channel.feishu_secret}`).update('').digest('base64');
+      }
+      const payload = JSON.stringify({
+        msg_type: 'interactive',
+        card: {
+          header: { title: { tag: 'plain_text', content: '☀️ ClawFeed 已接通' }, template: 'orange' },
+          elements: [{
+            tag: 'div',
+            text: { tag: 'lark_md', content: '这是一条测试消息。之后官方公开源的简报会按你勾选的源推到这个群。' },
+          }],
+        },
+        ...sign,
+      });
+      try {
+        const u = new URL(channel.feishu_webhook);
+        const result = await new Promise((resolve, reject) => {
+          const mod = u.protocol === 'https:' ? https : http;
+          const r = mod.request(u, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+          }, (resp) => {
+            let data = '';
+            resp.on('data', (c) => { data += c; });
+            resp.on('end', () => resolve({ status: resp.statusCode, body: data }));
+          });
+          r.on('error', reject);
+          r.end(payload);
+        });
+        const parsed = JSON.parse(result.body || '{}');
+        if (result.status >= 400 || (parsed.code !== 0 && parsed.StatusCode !== 0 && parsed.StatusCode !== undefined)) {
+          return json(res, { error: parsed.msg || parsed.StatusMessage || `HTTP ${result.status}` }, 502);
+        }
+        return json(res, { ok: true });
+      } catch (error) {
+        return json(res, { error: error.message || '测试推送失败' }, 502);
+      }
     }
 
     // GET /api/auth/google

@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import {
   FEATURED_CATEGORY,
   HOT_CATEGORY,
+  filterItemsBySourceIds,
+  filterPublicItems,
   isHotItem,
+  mergeFeaturedFallback,
   normalizeCategory,
   normalizeDigestCategories,
 } from '../src/digest-categories.mjs';
@@ -52,4 +55,38 @@ test('keeps a mix of important and featured items in original order', () => {
     ['d', FEATURED_CATEGORY],
     ['e', HOT_CATEGORY],
   ]);
+});
+
+test('pads a short all-hot digest with featured fallback items', () => {
+  const merged = mergeFeaturedFallback(
+    [
+      { title: 'hot-1', url: 'https://a.example/1', category: HOT_CATEGORY },
+      { title: 'hot-2', url: 'https://a.example/2', category: HOT_CATEGORY },
+    ],
+    [
+      { title: 'hot-1', url: 'https://a.example/1', category: HOT_CATEGORY },
+      { title: 'more-1', url: 'https://b.example/1', category: HOT_CATEGORY },
+      { title: 'more-2', url: 'https://b.example/2', category: HOT_CATEGORY },
+      { title: 'more-3', url: 'https://b.example/3', category: HOT_CATEGORY },
+      { title: 'more-4', url: 'https://b.example/4', category: HOT_CATEGORY },
+      { title: 'more-5', url: 'https://b.example/5', category: HOT_CATEGORY },
+      { title: 'more-6', url: 'https://b.example/6', category: HOT_CATEGORY },
+    ],
+    { minCount: 8 },
+  );
+
+  assert.equal(merged.length, 8);
+  assert.equal(merged[0].category, HOT_CATEGORY);
+  assert.ok(merged.slice(2).every((item) => item.category === FEATURED_CATEGORY));
+});
+
+test('filters Feishu fan-out items by source id and public flag', () => {
+  const items = [
+    { title: 'public', sourceId: 1, isPublic: true },
+    { title: 'private', sourceId: 2, isPublic: false },
+    { title: 'other', sourceId: 3, isPublic: true },
+  ];
+  assert.deepEqual(filterPublicItems(items).map((item) => item.title), ['public', 'other']);
+  assert.deepEqual(filterItemsBySourceIds(items, [2, 3]).map((item) => item.title), ['private', 'other']);
+  assert.deepEqual(filterItemsBySourceIds(items, []), []);
 });

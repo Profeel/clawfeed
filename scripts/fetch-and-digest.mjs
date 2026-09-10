@@ -28,7 +28,9 @@ import { fileURLToPath } from 'url';
 import { createHmac, createHash } from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import {
-  needsZhTranslation,
+  FEISHU_CARD_PROMPT,
+  attachFeishuSourceText,
+  prepareFeishuCardItem,
   resolveTranslationProvider,
   translateFeishuItems,
   translateFeishuText,
@@ -42,7 +44,11 @@ import {
   FEATURED_CATEGORY,
   HOT_CATEGORY,
   MAX_HOT_ITEMS,
+  MIN_DIGEST_ITEMS,
+  filterItemsBySourceIds,
+  filterPublicItems,
   isHotItem,
+  mergeFeaturedFallback,
   normalizeDigestCategories,
 } from '../src/digest-categories.mjs';
 
@@ -208,20 +214,20 @@ async function postJson(url, body) {
 
 // ── Feishu / Lark Webhook Push ─────────────────────────────────────────────
 
-function buildFeishuSign() {
-  if (!FEISHU_SECRET) return {};
+function buildFeishuSign(secret = FEISHU_SECRET) {
+  if (!secret) return {};
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const stringToSign = `${timestamp}\n${FEISHU_SECRET}`;
+  const stringToSign = `${timestamp}\n${secret}`;
   const sign = createHmac('sha256', stringToSign).update('').digest('base64');
   return { timestamp, sign };
 }
 
-async function postFeishu(card) {
-  const body = { msg_type: 'interactive', card, ...buildFeishuSign() };
+async function postFeishuCard(webhook, card, secret) {
+  const body = { msg_type: 'interactive', card, ...buildFeishuSign(secret) };
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const resp = await postJson(FEISHU_WEBHOOK, body);
+      const resp = await postJson(webhook, body);
       const result = JSON.parse(resp.body);
       if (resp.status >= 400 || (result.code !== 0 && result.StatusCode !== 0)) {
         throw new Error(result.msg || result.StatusMessage || `HTTP ${resp.status}`);
@@ -237,6 +243,10 @@ async function postFeishu(card) {
   }
   warn(`飞书推送失败: ${lastError?.message || '未知错误'}`);
   return false;
+}
+
+async function postFeishu(card) {
+  return postFeishuCard(FEISHU_WEBHOOK, card, FEISHU_SECRET);
 }
 
 function isValidHttpUrl(url) {
@@ -324,69 +334,51 @@ function buildHeaderCard(items, meta) {
   };
 }
 
-const FEISHU_TRANSLATE_PROMPT =
-  '你是新闻译者。把标题和摘要译成通顺的简体中文。' +
-  '保留公司名、产品名、人名等专有名词，但动词、解释和正文必须使用中文。' +
-  '标题如果几乎全是英文专有名词，必须补上中文动词，例如「发布 llm-gemini 0.34」。' +
-  '不要添加评论，不要翻译或改写 URL。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]';
-
-function prepareItemForTranslation(item) {
-  const clean = (value, max) => String(value || '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#8217;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/https?:\/\/\S+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
-  return { ...item, title: clean(item.title, 60), summary: clean(item.summary, 160) };
-}
+const FEISHU_CARD_PROVIDER = TRANSLATION_PROVIDER.apiKey
+  ? TRANSLATION_PROVIDER
+  : (DIGEST_PROVIDERS[0] || TRANSLATION_PROVIDER);
 
 async function translateChunkToZh(chunk) {
-  return translateFeishuItems(chunk.map(prepareItemForTranslation), {
-    apiKey: TRANSLATION_PROVIDER.apiKey,
+  return translateFeishuItems(chunk.map(prepareFeishuCardItem), {
+    apiKey: FEISHU_CARD_PROVIDER.apiKey,
     attempts: 4,
+    rewriteAll: true,
     requestTranslation: async (payload) => {
       const result = await callChatCompletion([
-        { role: 'system', content: FEISHU_TRANSLATE_PROMPT },
+        { role: 'system', content: FEISHU_CARD_PROMPT },
         { role: 'user', content: JSON.stringify(payload) },
-      ], 2500, TRANSLATION_PROVIDER);
+      ], 2500, FEISHU_CARD_PROVIDER);
       if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
       return extractCompletionText(result);
     },
     onRetry: async ({ attempt, remaining, error }) => {
       const reason = error?.message || `仍有 ${remaining.length} 个字段不是中文`;
-      warn(`飞书中文翻译第 ${attempt} 次未完成，准备重试: ${reason}`);
+      warn(`飞书标题与简述第 ${attempt} 次未完成，准备重试: ${reason}`);
       await sleep(attempt * 1000);
     },
   });
 }
 
 async function translateItemsToZh(items) {
-  const pendingCount = items.filter((item) =>
-    needsZhTranslation(item.title) || needsZhTranslation(item.summary)
-  ).length;
-  if (!pendingCount) return items;
+  if (!items?.length) return items;
 
-  log(`正在将飞书内容译成中文（${pendingCount}/${items.length} 条含英文，每批 2 条）...`);
+  log(`正在生成飞书中文标题与简述（${items.length} 条，每批 2 条）...`);
   const zhItems = [];
   const chunkSize = 2;
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize);
-    log(`  翻译 ${i + 1}-${Math.min(i + chunkSize, items.length)}/${items.length}...`);
+    log(`  总结 ${i + 1}-${Math.min(i + chunkSize, items.length)}/${items.length}...`);
     try {
       zhItems.push(...await translateChunkToZh(chunk));
     } catch (error) {
       if (chunk.length === 1) throw error;
-      warn(`小批次未过中文门禁，改为逐条翻译: ${error.message}`);
+      warn(`小批次未过中文门禁，改为逐条总结: ${error.message}`);
       for (const item of chunk) {
         zhItems.push(...await translateChunkToZh([item]));
       }
     }
   }
-  log('✓ 飞书中文翻译完成并通过中文门禁');
+  log('✓ 飞书标题与简述已生成并通过中文门禁');
   return zhItems;
 }
 
@@ -408,15 +400,18 @@ async function translateTextToZh(text) {
   });
 }
 
-// Send each article as an individual Feishu card
-async function sendFeishuArticles(items, meta, { onItemSent = () => {} } = {}) {
-  if (!FEISHU_WEBHOOK || !items?.length) return;
+async function deliverFeishuCards(zhItems, meta, {
+  webhook,
+  secret,
+  onItemSent = () => {},
+  label = '飞书',
+  throwOnPartial = true,
+} = {}) {
+  if (!webhook || !zhItems?.length) return [];
 
-  const zhItems = await translateItemsToZh(items);
-  log(`\n正在推送 ${zhItems.length} 条到飞书...`);
-
-  const headerSent = await postFeishu(buildHeaderCard(zhItems, meta));
-  if (headerSent) process.stdout.write('  ✓ 目录卡片\n');
+  log(`\n正在推送 ${zhItems.length} 条到${label}...`);
+  const headerSent = await postFeishuCard(webhook, buildHeaderCard(zhItems, meta), secret);
+  if (headerSent) process.stdout.write(`  ✓ ${label}目录卡片\n`);
   await sleep(600);
 
   let ok = 0;
@@ -424,23 +419,92 @@ async function sendFeishuArticles(items, meta, { onItemSent = () => {} } = {}) {
   const failedItems = [];
   for (let i = 0; i < zhItems.length; i++) {
     const card = buildArticleCard(zhItems[i], i + 1, zhItems.length);
-    const sent = await postFeishu(card);
+    const sent = await postFeishuCard(webhook, card, secret);
     if (sent) {
       ok++;
-      sentItems.push(items[i]);
-      await onItemSent(items[i]);
-      process.stdout.write(`  ✓ [${i + 1}/${zhItems.length}] ${zhItems[i].title?.slice(0, 30) || '-'}\n`);
+      sentItems.push(zhItems[i]);
+      await onItemSent(zhItems[i]);
+      process.stdout.write(`  ✓ ${label} [${i + 1}/${zhItems.length}] ${zhItems[i].title?.slice(0, 30) || '-'}\n`);
     } else {
-      failedItems.push(items[i]);
-      process.stdout.write(`  ✗ [${i + 1}/${zhItems.length}] 推送失败\n`);
+      failedItems.push(zhItems[i]);
+      process.stdout.write(`  ✗ ${label} [${i + 1}/${zhItems.length}] 推送失败\n`);
     }
     if (i < zhItems.length - 1) await sleep(600);
   }
 
-  log(`✅ 飞书推送完成（${ok}/${zhItems.length}）`);
-  if (!headerSent || failedItems.length > 0) {
-    throw new Error(`飞书推送未完整成功（目录 ${headerSent ? '成功' : '失败'}，文章 ${ok}/${zhItems.length}）`);
+  log(`✅ ${label}推送完成（${ok}/${zhItems.length}）`);
+  if (throwOnPartial && (!headerSent || failedItems.length > 0)) {
+    throw new Error(`${label}推送未完整成功（目录 ${headerSent ? '成功' : '失败'}，文章 ${ok}/${zhItems.length}）`);
   }
+  return sentItems;
+}
+
+function loadEnabledUserChannels(db) {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT uc.user_id, uc.feishu_webhook, uc.feishu_secret,
+             GROUP_CONCAT(us.source_id) AS source_ids
+      FROM user_channels uc
+      LEFT JOIN user_subscriptions us ON us.user_id = uc.user_id
+      WHERE uc.feishu_enabled = 1
+        AND uc.feishu_webhook IS NOT NULL
+        AND uc.feishu_webhook != ''
+      GROUP BY uc.user_id
+    `).all();
+  } catch {
+    return [];
+  }
+}
+
+async function fanOutUserFeishu(zhItems, meta) {
+  const db = await getPushDbAsync();
+  const channels = loadEnabledUserChannels(db);
+  if (!channels.length) return;
+
+  for (const channel of channels) {
+    const sourceIds = String(channel.source_ids || '')
+      .split(',')
+      .map((id) => Number(id))
+      .filter(Boolean);
+    const selected = sourceIds.length
+      ? filterItemsBySourceIds(zhItems, sourceIds)
+      : [];
+    if (!selected.length) {
+      log(`跳过用户 ${channel.user_id} 的飞书推送：勾选源没有对应条目`);
+      continue;
+    }
+    try {
+      await deliverFeishuCards(selected, meta, {
+        webhook: channel.feishu_webhook,
+        secret: channel.feishu_secret || '',
+        label: `用户${channel.user_id}飞书`,
+        throwOnPartial: false,
+      });
+    } catch (error) {
+      warn(`用户 ${channel.user_id} 飞书推送失败: ${error.message}`);
+    }
+  }
+}
+
+// Send each article as an individual Feishu card
+async function sendFeishuArticles(items, meta, { onItemSent = () => {}, sourceItems = [] } = {}) {
+  if (!items?.length) return [];
+  const channels = loadEnabledUserChannels(await getPushDbAsync());
+  if (!FEISHU_WEBHOOK && !channels.length) return [];
+
+  const zhItems = await translateItemsToZh(attachFeishuSourceText(items, sourceItems));
+  const officialItems = filterPublicItems(zhItems);
+  const sentItems = FEISHU_WEBHOOK
+    ? await deliverFeishuCards(officialItems.length ? officialItems : zhItems, meta, {
+      webhook: FEISHU_WEBHOOK,
+      secret: FEISHU_SECRET,
+      onItemSent,
+      label: '官方飞书',
+    })
+    : [];
+
+  await fanOutUserFeishu(zhItems, meta);
   return sentItems;
 }
 
@@ -532,7 +596,7 @@ async function fetchRss(url, limit = 20, timeout) {
       xmlText(block, 'description') ||
       xmlText(block, 'summary') ||
       xmlText(block, 'content')
-    ).slice(0, 400);
+    ).slice(0, 2400);
     const pubDate = xmlText(block, 'pubDate') || xmlText(block, 'published') || xmlText(block, 'updated');
     const author = xmlText(block, 'author') || xmlText(block, 'dc:creator') || xmlText(block, 'name');
     if (!title && !link) continue;
@@ -577,7 +641,7 @@ async function fetchReddit({ subreddit, sort = 'hot', limit = 20 } = {}) {
       title: p.title,
       url: p.url?.startsWith('/r/') ? `https://www.reddit.com${p.url}` : (p.url || `https://www.reddit.com${p.permalink}`),
       description: p.selftext
-        ? p.selftext.slice(0, 300)
+        ? p.selftext.slice(0, 1800)
         : `↑${p.score} · ${p.num_comments} 评论 · r/${p.subreddit}`,
       author: p.author,
     }));
@@ -1010,6 +1074,26 @@ function deduplicateItems(items) {
   return result;
 }
 
+function stampSourceMeta(items, rawItems = []) {
+  const byUrl = new Map();
+  for (const raw of rawItems) {
+    const key = normalizeUrlForHash(raw?.url);
+    if (!key) continue;
+    byUrl.set(key, raw);
+  }
+  return (items || []).map((item) => {
+    const raw = byUrl.get(normalizeUrlForHash(item?.url));
+    const sourceId = Number(raw?._sourceId || item.sourceId || 0) || 0;
+    const isPublic = Number(raw?._sourcePublic ?? item.isPublic ?? (raw ? 0 : 1)) === 1;
+    return {
+      ...item,
+      sourceId,
+      isPublic,
+      source: item.source || raw?._sourceName || '',
+    };
+  });
+}
+
 function buildDigestFromItems(structuredItems, digestType, dateStr, extraMeta = {}) {
   const items = normalizeDigestCategories(structuredItems);
   const hotItems = items.filter(isHotItem);
@@ -1074,10 +1158,12 @@ function generateHeuristicDigest(allItems, digestType) {
       // category, so only the top N stay 重要动态 and the rest are 精选资讯.
       category: index < MAX_HOT_ITEMS ? HOT_CATEGORY : FEATURED_CATEGORY,
       source: item._sourceName || '',
+      sourceId: item._sourceId || 0,
+      isPublic: Number(item._sourcePublic) === 1,
     };
   });
   if (!structuredItems.length) throw new Error('兜底摘要失败：没有可用的标题和链接');
-  return buildDigestFromItems(structuredItems, digestType, dateStr);
+  return buildDigestFromItems(stampSourceMeta(structuredItems, allItems), digestType, dateStr);
 }
 
 async function generateDigest(allItems, digestType) {
@@ -1092,7 +1178,7 @@ async function generateDigest(allItems, digestType) {
   const itemLines = allItems.map((item, i) => {
     const parts = [`${i + 1}. [${item._sourceName}] ${item.title || '(无标题)'}`];
     if (item.url) parts.push(`   URL: ${item.url}`);
-    if (item.description) parts.push(`   摘要: ${item.description.slice(0, 200)}`);
+    if (item.description) parts.push(`   正文: ${item.description.slice(0, 1600)}`);
     return parts.join('\n');
   }).join('\n\n');
 
@@ -1100,17 +1186,17 @@ async function generateDigest(allItems, digestType) {
 
 每个元素格式：
 {
-  "title": "中文标题（15字以内，动词开头，点明核心事件）",
+  "title": "中文标题（15字以内，动词开头，总结整篇核心事件，不要翻译原文标题或开头几句）",
   "url": "必须来自输入的真实链接，不可编造",
-  "summary": "2-3 句话的 AI 简报，严格 ≤140 个汉字。第①句：谁做了什么（核心事实）。第②句：为什么重要/有何影响。第③句（可选）：行业启示或值得关注的延伸。不要用序号，用自然段落。语言简练有力，禁止空话套话。",
+  "summary": "2-3 句话的 AI 简报，严格 ≤140 个汉字。必须综合所给正文的要点，禁止把开头几句直接翻译或扩写。第①句：谁做了什么（核心事实）。第②句：为什么重要/有何影响。第③句（可选）：行业启示或值得关注的延伸。不要用序号，用自然段落。语言简练有力，禁止空话套话。",
   "category": "精选资讯",
   "source": "来源名称"
 }
 
 严格规则：
-1. 输出 10-15 条。默认 category 必须是「精选资讯」。「重要动态」最多 4 条，仅限大额融资 >$100M、重大产品发布、突破性研究或重要政策。活动预告、转发评论、招聘、营销和普通更新一律「精选资讯」
-2. summary 必须 ≤140 个汉字（约 3 句话）。每句话都必须有实际信息量，禁止出现"值得关注""引发热议"等空洞表述
-3. title 必须是动宾结构，如"OpenAI 发布 GPT-5"而非"关于 GPT-5 的发布"
+1. 输出 10-15 条，不能只输出「重要动态」。默认 category 必须是「精选资讯」，精选资讯至少 6 条。「重要动态」最多 4 条，仅限大额融资 >$100M、重大产品发布、突破性研究或重要政策；不够重大时可以少于 4 条甚至为 0。活动预告、转发评论、招聘、营销和普通更新一律「精选资讯」
+2. summary 必须 ≤140 个汉字（约 3 句话），且是对全文/所给正文的总结，不是导语翻译。每句话都必须有实际信息量，禁止出现"值得关注""引发热议"等空洞表述
+3. title 必须是动宾结构，如"OpenAI 发布 GPT-5"而非"关于 GPT-5 的发布"；禁止把原文标题或前几句直接译成中文
 4. URL 必须完整且来自输入，不可编造或省略
 5. 全部中文输出。去除广告、营销内容
 6. **严格去重**（最重要的规则）：
@@ -1189,6 +1275,13 @@ async function generateDigest(allItems, digestType) {
 
   // Deduplicate items by URL and similar titles
   structuredItems = deduplicateItems(structuredItems);
+  structuredItems = stampSourceMeta(structuredItems, allItems);
+  if (structuredItems.length < MIN_DIGEST_ITEMS) {
+    log(`摘要只产出 ${structuredItems.length} 条，用采集条目补足精选资讯`);
+    const heuristic = generateHeuristicDigest(allItems, digestType);
+    structuredItems = mergeFeaturedFallback(structuredItems, heuristic.metadata.items);
+    structuredItems = stampSourceMeta(structuredItems, allItems);
+  }
 
   return buildDigestFromItems(structuredItems, digestType, dateStr);
 }
@@ -1412,7 +1505,13 @@ async function main() {
       const items = await fetchSource(source);
       console.log(`✓ ${items.length} 条`);
       for (const item of items) {
-        allItems.push({ ...item, _sourceName: source.name, _sourceType: source.type });
+        allItems.push({
+          ...item,
+          _sourceName: source.name,
+          _sourceType: source.type,
+          _sourceId: source.id,
+          _sourcePublic: Number(source.is_public) === 1,
+        });
       }
     } catch (e) {
       console.log(`✗ 失败: ${e.message}`);
@@ -1531,37 +1630,38 @@ async function main() {
     log(`✅ Digest 保存成功！id = ${postRes.data.id}`);
     log(`   查看: http://127.0.0.1:${PORT}`);
 
-    // Push to Feishu group bot
+    // Push to official Feishu group and any user-configured webhooks
     let pushedItems = [];
-    if (FEISHU_WEBHOOK) {
-      if (metadata.items?.length > 0) {
-        pushedItems = await sendFeishuArticles(metadata.items, metadata, {
+    if (metadata.items?.length > 0) {
+      metadata.items = stampSourceMeta(metadata.items, dedupedItems);
+      pushedItems = await sendFeishuArticles(metadata.items, metadata, {
+        sourceItems: dedupedItems,
+        onItemSent: async (item) => {
+          if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
+        },
+      });
+    } else if (FEISHU_WEBHOOK) {
+      const rescued = tryRescueJsonItems(content);
+      if (rescued) {
+        log('\n内容为 JSON 格式，已抢救解析为结构化卡片推送');
+        const now = new Date();
+        const rescuedMeta = {
+          digestType: DIGEST_TYPE,
+          dateStr: now.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit',
+          }),
+        };
+        pushedItems = await sendFeishuArticles(stampSourceMeta(rescued, dedupedItems), rescuedMeta, {
+          sourceItems: dedupedItems,
           onItemSent: async (item) => {
             if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
           },
         });
       } else {
-        const rescued = tryRescueJsonItems(content);
-        if (rescued) {
-          log('\n内容为 JSON 格式，已抢救解析为结构化卡片推送');
-          const now = new Date();
-          const rescuedMeta = {
-            digestType: DIGEST_TYPE,
-            dateStr: now.toLocaleString('zh-CN', {
-              timeZone: 'Asia/Shanghai',
-              year: 'numeric', month: '2-digit', day: '2-digit',
-              hour: '2-digit', minute: '2-digit',
-            }),
-          };
-          pushedItems = await sendFeishuArticles(rescued, rescuedMeta, {
-            onItemSent: async (item) => {
-              if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
-            },
-          });
-        } else {
-          log('\n正在推送到飞书群机器人（纯文本模式）...');
-          await sendFeishuNotification(content);
-        }
+        log('\n正在推送到飞书群机器人（纯文本模式）...');
+        await sendFeishuNotification(content);
       }
     }
 

@@ -120,6 +120,13 @@ export function getDb(dbPath) {
   } catch (e) {
     if (!e.message.includes('already exists')) console.error('Migration 011:', e.message);
   }
+  // Migration 012: per-user Feishu webhook channels
+  try {
+    const sql12 = readFileSync(join(ROOT, 'migrations', '012_user_channels.sql'), 'utf8');
+    _db.exec(sql12);
+  } catch (e) {
+    if (!e.message.includes('already exists')) console.error('Migration 012:', e.message);
+  }
   // Backfill slugs for existing users
   _backfillSlugs(_db);
   return _db;
@@ -510,4 +517,44 @@ export function getConfig(db) {
 export function setConfig(db, key, value) {
   const v = typeof value === 'string' ? value : JSON.stringify(value);
   db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, v);
+}
+
+export function getUserChannel(db, userId) {
+  return db.prepare('SELECT * FROM user_channels WHERE user_id = ?').get(userId) || null;
+}
+
+export function upsertUserChannel(db, userId, { webhook, secret, enabled }) {
+  const existing = getUserChannel(db, userId);
+  const nextWebhook = webhook === undefined ? existing?.feishu_webhook || '' : webhook;
+  const nextSecret = secret === undefined ? existing?.feishu_secret || '' : secret;
+  const nextEnabled = enabled === undefined
+    ? (existing ? existing.feishu_enabled : 1)
+    : (enabled ? 1 : 0);
+  db.prepare(`
+    INSERT INTO user_channels (user_id, feishu_webhook, feishu_secret, feishu_enabled, updated_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(user_id) DO UPDATE SET
+      feishu_webhook = excluded.feishu_webhook,
+      feishu_secret = excluded.feishu_secret,
+      feishu_enabled = excluded.feishu_enabled,
+      updated_at = excluded.updated_at
+  `).run(userId, nextWebhook, nextSecret, nextEnabled);
+  return getUserChannel(db, userId);
+}
+
+export function deleteUserChannel(db, userId) {
+  return db.prepare('DELETE FROM user_channels WHERE user_id = ?').run(userId);
+}
+
+export function listEnabledFeishuChannels(db) {
+  return db.prepare(`
+    SELECT uc.user_id, uc.feishu_webhook, uc.feishu_secret,
+           GROUP_CONCAT(us.source_id) AS source_ids
+    FROM user_channels uc
+    LEFT JOIN user_subscriptions us ON us.user_id = uc.user_id
+    WHERE uc.feishu_enabled = 1
+      AND uc.feishu_webhook IS NOT NULL
+      AND uc.feishu_webhook != ''
+    GROUP BY uc.user_id
+  `).all();
 }

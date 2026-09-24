@@ -1,3 +1,5 @@
+import { normalizeOpenRouterAutoModel } from './openrouter-free.mjs';
+
 const ENGLISH_WORDS = new Set([
   'a', 'after', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'before', 'but', 'by',
   'can', 'for', 'from', 'has', 'have', 'in', 'into', 'is', 'it', 'its', 'more',
@@ -11,6 +13,10 @@ const ENGLISH_WORDS = new Set([
 const ALLOWED_LOWERCASE_NAMES = new Set([
   'ai', 'api', 'css', 'html', 'ios', 'javascript', 'llm', 'macos', 'npm',
   'openai', 'python', 'sdk', 'sql', 'typescript',
+  // 中文科技资讯中约定俗成保留英文的技术名词，避免门禁误杀
+  'agi', 'app', 'apps', 'asr', 'bot', 'bots', 'cli', 'cpu', 'docker', 'git',
+  'github', 'gpu', 'gpus', 'ide', 'java', 'linux', 'mcp', 'nlp', 'ocr',
+  'rag', 'rust', 'saas', 'token', 'tokens', 'tpu', 'tts', 'ui', 'ux', 'web',
 ]);
 
 const stripNonLanguageContent = (text) => String(text || '')
@@ -21,12 +27,8 @@ const stripNonLanguageContent = (text) => String(text || '')
 
 const chineseCharCount = (text) => (String(text || '').match(/[\u3400-\u9fff]/g) || []).length;
 
-const normalizeProviderModel = (baseUrl, model, fallbackModel) => {
-  const configuredModel = model || fallbackModel;
-  return /openrouter/i.test(baseUrl) && /^(?:auto|openrouter\/free-latest)$/i.test(configuredModel)
-    ? 'openrouter/free'
-    : configuredModel;
-};
+const normalizeProviderModel = (baseUrl, model, fallbackModel) =>
+  normalizeOpenRouterAutoModel(baseUrl, model || fallbackModel);
 
 export function resolveTranslationProvider({
   translateApiKey = '',
@@ -57,7 +59,7 @@ export function resolveTranslationProvider({
     return {
       apiKey: llmApiKey,
       baseUrl,
-      model: normalizeProviderModel(baseUrl, llmModel, /openrouter/i.test(baseUrl) ? 'openrouter/free' : siliconFlow.model),
+      model: normalizeProviderModel(baseUrl, llmModel, /openrouter/i.test(baseUrl) ? 'openrouter/free-latest' : siliconFlow.model),
       source: 'llm',
     };
   }
@@ -81,7 +83,8 @@ export function needsZhTranslation(text) {
   const latinLetters = (content.match(/[A-Za-z]/g) || []).length;
   if (chinese === 0) return true;
 
-  const words = content.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+  // 字母数字混合的品牌名（如 a16z、GPT-6）不应被拆出英文单词（a16z 会被拆成冠词 a 导致误判）
+  const words = content.match(/(?<![A-Za-z0-9])[A-Za-z][A-Za-z'-]*(?![0-9])/g) || [];
   const proseWords = words.filter((word) => ENGLISH_WORDS.has(word.toLowerCase())).length;
   if (proseWords >= 1) return true;
 
@@ -89,7 +92,9 @@ export function needsZhTranslation(text) {
     word === word.toLowerCase() && !ALLOWED_LOWERCASE_NAMES.has(word)
   );
   if (lowercaseProse.length) return true;
-  if (words.length >= 3 && chinese < 4) return true;
+  // 中文标题常含多个大写产品名（如「OpenAI发布GPT-6 Sol与Luna」仅 3 个汉字），
+  // 只要无英文虚词/小写散文词且含少量汉字即视为中文文案
+  if (words.length >= 3 && chinese < 2) return true;
 
   return latinLetters >= 20 && chinese / (chinese + latinLetters) < 0.12;
 }

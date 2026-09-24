@@ -24,7 +24,7 @@ test('prefers configured LLM translation provider and normalizes OpenRouter auto
   }), {
     apiKey: 'openrouter-key',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'openrouter/free',
+    model: 'openrouter/free-latest',
     source: 'llm',
   });
 });
@@ -49,7 +49,7 @@ test('normalizes OpenRouter auto model for explicit translation provider only', 
     translateBaseUrl: 'https://openrouter.ai/api/v1',
     translateModel: 'openrouter/free-latest',
   });
-  assert.equal(openRouter.model, 'openrouter/free');
+  assert.equal(openRouter.model, 'openrouter/free-latest');
 
   const otherProvider = resolveTranslationProvider({
     translateApiKey: 'translation-key',
@@ -70,6 +70,10 @@ test('detects English prose but permits English proper nouns in Chinese copy', (
   assert.equal(needsZhTranslation('AI boom 来袭'), true);
   assert.equal(needsZhTranslation('AI News'), true);
   assert.equal(needsZhTranslation('Python SDK 发布新版本'), false);
+  assert.equal(needsZhTranslation('Luna 输入定价仅 0.1 美元/百万 token，主打高并发场景'), false);
+  assert.equal(needsZhTranslation('OpenAI发布GPT-6 Sol与Luna'), false);
+  assert.equal(needsZhTranslation('a16z创办Horowitz Andreessen学院'), false);
+  assert.equal(needsZhTranslation('a16z宣布在旧金山创办面向高中毕业生的全日制线下学校'), false);
   assert.equal(needsZhTranslation('新款智���手机可检测隐藏摄像头'), true);
 });
 

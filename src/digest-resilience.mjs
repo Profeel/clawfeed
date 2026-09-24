@@ -1,14 +1,12 @@
+import { normalizeOpenRouterAutoModel } from './openrouter-free.mjs';
+
 const SILICONFLOW = {
   baseUrl: 'https://api.siliconflow.cn/v1',
   model: 'deepseek-ai/DeepSeek-V3',
 };
 
-const normalizeModel = (baseUrl, model, fallbackModel) => {
-  const configured = model || fallbackModel;
-  return /openrouter/i.test(baseUrl) && /^(?:auto|openrouter\/free-latest)$/i.test(configured)
-    ? 'openrouter/free'
-    : configured;
-};
+const normalizeModel = (baseUrl, model, fallbackModel) =>
+  normalizeOpenRouterAutoModel(baseUrl, model || fallbackModel);
 
 const addProvider = (providers, seen, { apiKey, baseUrl, model, source }) => {
   if (!apiKey || !baseUrl || !model) return;
@@ -34,7 +32,7 @@ export function resolveDigestProviders({
 
   if (digestApiKey) {
     const baseUrl = digestBaseUrl || llmBaseUrl || SILICONFLOW.baseUrl;
-    const fallbackModel = /openrouter/i.test(baseUrl) ? 'openrouter/free' : SILICONFLOW.model;
+    const fallbackModel = /openrouter/i.test(baseUrl) ? 'openrouter/free-latest' : SILICONFLOW.model;
     addProvider(providers, seen, {
       apiKey: digestApiKey,
       baseUrl,
@@ -47,7 +45,7 @@ export function resolveDigestProviders({
     addProvider(providers, seen, {
       apiKey: llmApiKey,
       baseUrl: llmBaseUrl,
-      model: llmModel || (/openrouter/i.test(llmBaseUrl) ? 'openrouter/free' : SILICONFLOW.model),
+      model: llmModel || (/openrouter/i.test(llmBaseUrl) ? 'openrouter/free-latest' : SILICONFLOW.model),
       source: 'llm',
     });
   }

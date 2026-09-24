@@ -16,7 +16,7 @@ test('digest generation prefers the configured shared LLM and keeps DeepSeek as 
   });
 
   assert.deepEqual(providers.map(({ baseUrl, model, source }) => ({ baseUrl, model, source })), [
-    { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free', source: 'llm' },
+    { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free-latest', source: 'llm' },
     { baseUrl: 'https://api.siliconflow.cn/v1', model: 'deepseek-ai/DeepSeek-V3', source: 'deepseek' },
   ]);
 });
@@ -25,10 +25,10 @@ test('explicit digest provider takes priority and duplicate providers are remove
   const providers = resolveDigestProviders({
     digestApiKey: 'same-key',
     digestBaseUrl: 'https://openrouter.ai/api/v1',
-    digestModel: 'openrouter/free',
+    digestModel: 'openrouter/free-latest',
     llmApiKey: 'same-key',
     llmBaseUrl: 'https://openrouter.ai/api/v1',
-    llmModel: 'openrouter/free',
+    llmModel: 'openrouter/free-latest',
   });
 
   assert.equal(providers.length, 1);

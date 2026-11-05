@@ -74,6 +74,9 @@ test('detects English prose but permits English proper nouns in Chinese copy', (
   assert.equal(needsZhTranslation('OpenAI发布GPT-6 Sol与Luna'), false);
   assert.equal(needsZhTranslation('a16z创办Horowitz Andreessen学院'), false);
   assert.equal(needsZhTranslation('a16z宣布在旧金山创办面向高中毕业生的全日制线下学校'), false);
+  assert.equal(needsZhTranslation('AT&T智能家居安防系统接入Gemini for Home'), false);
+  assert.equal(needsZhTranslation('AT&T的Connected Life智能家居安防系统现已接入Gemini for Home。'), false);
+  assert.equal(needsZhTranslation('This is English prose 但附带一段中文说明'), true);
   assert.equal(needsZhTranslation('新款智���手机可检测隐藏摄像头'), true);
 });
 

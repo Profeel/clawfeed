@@ -85,13 +85,17 @@ export function needsZhTranslation(text) {
 
   // 字母数字混合的品牌名（如 a16z、GPT-6）不应被拆出英文单词（a16z 会被拆成冠词 a 导致误判）
   const words = content.match(/(?<![A-Za-z0-9])[A-Za-z][A-Za-z'-]*(?![0-9])/g) || [];
-  const proseWords = words.filter((word) => ENGLISH_WORDS.has(word.toLowerCase())).length;
-  if (proseWords >= 1) return true;
-
-  const lowercaseProse = words.filter((word) =>
-    word === word.toLowerCase() && !ALLOWED_LOWERCASE_NAMES.has(word)
+  const proseWords = new Set(
+    words
+      .filter((word) => word !== word.toUpperCase() && ENGLISH_WORDS.has(word.toLowerCase()))
+      .map((word) => word.toLowerCase())
   );
-  if (lowercaseProse.length) return true;
+  if (proseWords.size >= 2 || (proseWords.size === 1 && chinese < 6)) return true;
+
+  const lowercaseProse = new Set(words.filter((word) =>
+    word === word.toLowerCase() && !ALLOWED_LOWERCASE_NAMES.has(word)
+  ));
+  if (lowercaseProse.size >= 2 || (lowercaseProse.size === 1 && chinese < 6)) return true;
   // 中文标题常含多个大写产品名（如「OpenAI发布GPT-6 Sol与Luna」仅 3 个汉字），
   // 只要无英文虚词/小写散文词且含少量汉字即视为中文文案
   if (words.length >= 3 && chinese < 2) return true;

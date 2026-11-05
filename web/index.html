@@ -231,6 +231,22 @@
   .sms-verify-btn:disabled { opacity: .5; cursor: not-allowed; }
   .sms-tip { font-size: 11px; color: #666; margin-top: 10px; text-align: center; }
   .sms-error { font-size: 12px; color: #f04040; margin-top: 8px; min-height: 16px; }
+  .connect-page { display: flex; flex-direction: column; gap: 20px; }
+  .connect-hero { font-size: 14px; color: #888; line-height: 1.6; }
+  .connect-section { border: 1px solid #282828; border-radius: 12px; padding: 16px 18px; background: #1a1a1a; }
+  body.light .connect-section { background: #fff; border-color: #ddd; }
+  .connect-section h3 { font-size: 15px; margin-bottom: 8px; }
+  .connect-section p { font-size: 13px; color: #888; line-height: 1.6; margin-bottom: 12px; }
+  .connect-steps { margin: 0 0 14px 18px; color: #aaa; font-size: 13px; line-height: 1.7; }
+  body.light .connect-steps { color: #555; }
+  .connect-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .connect-btn { padding: 8px 16px; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; }
+  .connect-btn.primary { background: #1a3a1a; border-color: #40c040; color: #40c040; }
+  .connect-btn:hover { border-color: #666; color: #fff; }
+  .connect-source { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #222; }
+  .connect-source:last-child { border-bottom: none; }
+  .connect-source label { display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer; font-size: 14px; }
+  .connect-source input { width: 16px; height: 16px; accent-color: #40c040; }
 </style>
 </head>
 <body>
@@ -251,6 +267,7 @@
     <div class="tab" data-type="weekly">周报</div>
     <div class="tab" data-type="monthly">月报</div>
     <div class="tab" data-type="marks">📌 Mark 收藏</div>
+    <div class="tab" data-type="connect">接入飞书</div>
     <div id="generateBtnWrap" style="display:none;margin-left:auto;align-items:center;gap:6px;flex-shrink:0;">
       <label style="display:flex;align-items:center;gap:3px;font-size:12px;color:#888;cursor:pointer;" title="深度模式">
         <input type="checkbox" id="deepModeCheck" style="accent-color:#58a6ff;width:14px;height:14px;">
@@ -326,6 +343,30 @@ const I18N = {
     title: '☀️ ClawFeed',
     subtitle: 'AI 新闻简报 — POWERED BY <a href="https://x.com/ZylosAI" target="_blank" rel="noopener" class="agent-name zylos">Jessie@ZylosAI</a>, <a href="https://x.com/OpenClaw" target="_blank" rel="noopener" class="agent-name openclaw">Lisa@OpenClaw</a>',
     tab4h: '4H 简报', tabDaily: '日报', tabWeekly: '周报', tabMonthly: '月报', tabMarks: '📌 Mark 收藏',
+    tabConnect: '接入飞书',
+    connectHero: '把简报接到飞书：加入官方群，或绑定自己的群机器人。官方维护公开源，你勾选后进入自己的推送；也可以继续添加自己的源。',
+    connectOfficialTitle: '加入官方群',
+    connectOfficialDesc: '官方群推送全部公开源精选，不用自己配机器人。',
+    connectOfficialBtn: '打开飞书加入',
+    connectOfficialScan: '用飞书扫码加入官方群，二维码永久有效。',
+    connectOfficialMissing: '官方群链接还没配置。你可以先用下面的方式接到自己的群。',
+    connectDiyTitle: '接到自己的飞书群',
+    connectDiyDesc: '在自己的群里加一个自定义机器人，把 Webhook 填到这里。之后只推你勾选的源。',
+    connectStep1: '打开飞书群 → 设置 → 群机器人 → 添加自定义机器人',
+    connectStep2: '复制 Webhook 地址（可选：打开签名校验并复制密钥）',
+    connectStep3: '粘贴保存，点测试推送确认群里能收到',
+    connectWebhook: '飞书 Webhook',
+    connectSecret: '签名密钥（可选）',
+    connectSave: '保存并开启',
+    connectTest: '测试推送',
+    connectDisable: '关闭推送',
+    connectLoginHint: '登录后即可绑定自己的群机器人，并勾选公开源。',
+    connectSourcesTitle: '官方公开源',
+    connectSourcesDesc: '勾选后进入你自己的飞书推送。不勾选则官方群仍会推全部公开源。',
+    connectOwnTitle: '添加自己的源',
+    connectSaved: '已保存，飞书推送已开启',
+    connectTestOk: '测试消息已发送，请到群里查看',
+    connectDisabled: '已关闭飞书推送',
     loginBanner: '💡 登录 Google 账号即可收藏文章、管理个人书签',
     loginBtn: '登录', logout: '退出', signIn: '登录',
     loading: '加载中...', noData: '暂无数据', loadMore: '加载更多', loadingMore: '加载中...',
@@ -391,6 +432,30 @@ const I18N = {
     title: '☀️ ClawFeed',
     subtitle: 'AI NEWS DIGEST — POWERED BY <a href="https://x.com/ZylosAI" target="_blank" rel="noopener" class="agent-name zylos">Jessie@ZylosAI</a>, <a href="https://x.com/OpenClaw" target="_blank" rel="noopener" class="agent-name openclaw">Lisa@OpenClaw</a>',
     tab4h: '4H Briefs', tabDaily: 'Daily', tabWeekly: 'Weekly', tabMonthly: 'Monthly', tabMarks: '📌 Marks',
+    tabConnect: 'Connect Feishu',
+    connectHero: 'Get the digest in Feishu: join the official group, or connect your own group bot. Pick official public sources, or add your own.',
+    connectOfficialTitle: 'Join the official group',
+    connectOfficialDesc: 'The official group receives every public source. No bot setup required.',
+    connectOfficialBtn: 'Open in Feishu',
+    connectOfficialScan: 'Scan with Feishu to join the official group. This QR code does not expire.',
+    connectOfficialMissing: 'The official group link is not configured yet. You can still connect your own group below.',
+    connectDiyTitle: 'Connect your own Feishu group',
+    connectDiyDesc: 'Add a custom bot in your group and paste the webhook. We will only push sources you select.',
+    connectStep1: 'Open your Feishu group → Settings → Bots → Add custom bot',
+    connectStep2: 'Copy the webhook URL (optional: enable signing and copy the secret)',
+    connectStep3: 'Save it here, then send a test card to confirm delivery',
+    connectWebhook: 'Feishu webhook',
+    connectSecret: 'Signing secret (optional)',
+    connectSave: 'Save and enable',
+    connectTest: 'Send test',
+    connectDisable: 'Disable push',
+    connectLoginHint: 'Sign in to connect your own bot and select official sources.',
+    connectSourcesTitle: 'Official public sources',
+    connectSourcesDesc: 'Checked sources go to your own Feishu push. The official group still gets every public source.',
+    connectOwnTitle: 'Add your own source',
+    connectSaved: 'Saved. Feishu push is on.',
+    connectTestOk: 'Test card sent. Check your group.',
+    connectDisabled: 'Feishu push disabled',
     loginBanner: '💡 Sign in with Google to bookmark articles and manage your reading list',
     loginBtn: 'Login', logout: 'Logout', signIn: 'Sign in',
     loading: 'Loading...', noData: 'No data', loadMore: 'Load More', loadingMore: 'Loading...',
@@ -474,6 +539,8 @@ function applyLang() {
   document.querySelector('[data-type="weekly"]').textContent = t('tabWeekly');
   document.querySelector('[data-type="monthly"]').textContent = t('tabMonthly');
   document.querySelector('[data-type="marks"]').textContent = t('tabMarks');
+  const connectTab = document.querySelector('[data-type="connect"]');
+  if (connectTab) connectTab.textContent = t('tabConnect');
   const banner = document.getElementById('loginBanner');
   if (banner) banner.querySelector('span').textContent = t('loginBanner');
   const genBtn = document.getElementById('generateBtn');
@@ -540,6 +607,7 @@ const API = (() => {
   const p = location.pathname;
   if (p.startsWith('/staging/clawfeed')) return '/staging/clawfeed/api';
   if (p.startsWith('/digest')) return '/digest/api';
+  if (p.startsWith('/cf')) return '/cf/api';
   return '/api';
 })();
 
@@ -862,6 +930,7 @@ async function renderList(append = false) {
 
   if (currentType === 'marks') { renderMarks(); return; }
   if (currentType === 'sources') { renderSources(); return; }
+  if (currentType === 'connect') { renderConnect(); return; }
 
   if (!append) {
     currentOffset = 0;
@@ -1136,6 +1205,149 @@ function renderDeletedSourceCard(s) {
   </div>`;
 }
 
+async function renderConnect() {
+  const list = document.getElementById('list');
+  list.innerHTML = `<div class="loading">${t('loading')}</div>`;
+  try {
+    const [connectResp, sourcesResp, channelResp] = await Promise.all([
+      fetch(`${API}/connect`, { credentials: 'same-origin' }),
+      fetch(`${API}/sources`, { credentials: 'same-origin' }),
+      currentUser ? fetch(`${API}/me/channel`, { credentials: 'same-origin' }) : Promise.resolve(null),
+    ]);
+    const connect = await connectResp.json();
+    const sources = await sourcesResp.json();
+    const channel = channelResp && channelResp.ok ? await channelResp.json() : null;
+    const officialSources = (Array.isArray(sources) ? sources : []).filter(s => s.is_public);
+    const officialUrl = connect.officialGroupUrl || '';
+    const assetBase = API.endsWith('/api') ? API.slice(0, -4) : '';
+
+    let html = `<div class="connect-page">
+      <div class="connect-hero">${t('connectHero')}</div>
+      <section class="connect-section">
+        <h3>${t('connectOfficialTitle')}</h3>
+        <p>${t('connectOfficialDesc')}</p>
+        ${connect.officialGroupQr || officialUrl ? `
+          <p>${t('connectOfficialScan')}</p>
+          ${connect.officialGroupQr ? `<div style="display:flex;justify-content:center;margin:12px 0 16px;">
+            <img src="${assetBase}/feishu-group-qr.png?v=2" alt="Feishu group QR" width="200" height="200" style="width:200px;height:200px;object-fit:contain;background:#fff;border-radius:12px;padding:10px;">
+          </div>` : ''}
+          ${officialUrl ? `<div class="connect-actions" style="justify-content:center;"><a class="connect-btn primary" href="${esc(officialUrl)}" target="_blank" rel="noopener">${t('connectOfficialBtn')}</a></div>` : ''}
+        ` : `<p>${t('connectOfficialMissing')}</p>`}
+      </section>
+      <section class="connect-section">
+        <h3>${t('connectDiyTitle')}</h3>
+        <p>${t('connectDiyDesc')}</p>
+        <ol class="connect-steps">
+          <li>${t('connectStep1')}</li>
+          <li>${t('connectStep2')}</li>
+          <li>${t('connectStep3')}</li>
+        </ol>
+        ${currentUser ? `
+          <div class="source-form" style="margin:0;padding:0;border:none;background:transparent;">
+            <div class="form-row">
+              <label>${t('connectWebhook')}</label>
+              <input id="feishuWebhook" type="url" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." value="">
+            </div>
+            <div class="form-row">
+              <label>${t('connectSecret')}</label>
+              <input id="feishuSecret" type="password" placeholder="${channel?.hasSecret ? '********' : ''}" value="">
+            </div>
+            <div class="connect-actions">
+              <button class="connect-btn primary" onclick="saveFeishuChannel()">${t('connectSave')}</button>
+              <button class="connect-btn" onclick="testFeishuChannel()">${t('connectTest')}</button>
+              <button class="connect-btn" onclick="disableFeishuChannel()">${t('connectDisable')}</button>
+            </div>
+            ${channel?.feishuEnabled ? `<div style="margin-top:10px;font-size:12px;color:#40c040;">${lang==='zh'?'当前已开启':'Enabled'}${channel.feishuWebhook ? ' · ' + esc(channel.feishuWebhook) : ''}</div>` : ''}
+          </div>
+        ` : `<div class="connect-actions"><span style="font-size:13px;color:#888;">${t('connectLoginHint')}</span></div>`}
+      </section>
+      <section class="connect-section">
+        <h3>${t('connectSourcesTitle')}</h3>
+        <p>${t('connectSourcesDesc')}</p>
+        <div>
+          ${officialSources.length ? officialSources.map(s => `
+            <div class="connect-source">
+              <label>
+                <input type="checkbox" ${s.subscribed ? 'checked' : ''} ${currentUser ? '' : 'disabled'}
+                  onchange="toggleOfficialSource(${s.id}, this.checked)">
+                <span>${SOURCE_ICONS[s.type] || '📦'} ${esc(s.name)}</span>
+              </label>
+              <span style="font-size:11px;color:#666;">${s.type}</span>
+            </div>
+          `).join('') : `<div class="empty">${t('noSources')}</div>`}
+        </div>
+      </section>
+      <section class="connect-section">
+        <h3>${t('connectOwnTitle')}</h3>
+        ${currentUser ? `<div id="smartAddContainer"></div>` : `<p>${t('connectLoginHint')}</p>`}
+      </section>
+    </div>`;
+    list.innerHTML = html;
+    if (currentUser) renderSmartAdd();
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Failed: ${e.message}</div>`;
+  }
+}
+
+async function toggleOfficialSource(id, checked) {
+  if (!currentUser) {
+    showToast(t('connectLoginHint'));
+    return;
+  }
+  try {
+    if (checked) {
+      await fetch(`${API}/subscriptions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ sourceId: id }),
+      });
+    } else {
+      await fetch(`${API}/subscriptions/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+    }
+  } catch (e) {
+    showToast(e.message);
+    renderConnect();
+  }
+}
+
+async function saveFeishuChannel() {
+  const webhook = document.getElementById('feishuWebhook')?.value.trim();
+  const secret = document.getElementById('feishuSecret')?.value.trim();
+  const body = { feishuEnabled: true };
+  if (webhook) body.feishuWebhook = webhook;
+  if (secret) body.feishuSecret = secret;
+  const resp = await fetch(`${API}/me/channel`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { showToast(data.error || 'failed'); return; }
+  showToast(t('connectSaved'));
+  renderConnect();
+}
+
+async function testFeishuChannel() {
+  const resp = await fetch(`${API}/me/channel/test`, { method: 'POST', credentials: 'same-origin' });
+  const data = await resp.json();
+  showToast(resp.ok ? t('connectTestOk') : (data.error || 'failed'));
+}
+
+async function disableFeishuChannel() {
+  const resp = await fetch(`${API}/me/channel`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ feishuEnabled: false }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { showToast(data.error || 'failed'); return; }
+  showToast(t('connectDisabled'));
+  renderConnect();
+}
+
 async function renderSources() {
   const list = document.getElementById('list');
   list.innerHTML = `<div class="loading">${t('loading')}</div>`;
@@ -1368,7 +1580,8 @@ async function confirmSmartAdd() {
       body: JSON.stringify({ name: resolvedSource.name, type: resolvedSource.type, config: JSON.stringify(resolvedSource.config), isPublic }) });
     showToast(t('sourceCreated'));
     smartAddState = 'input'; resolvedSource = null;
-    renderSources();
+    if (currentType === 'connect') renderConnect();
+    else renderSources();
   } catch (e) { showToast('Error: ' + e.message); }
 }
 
@@ -1824,7 +2037,7 @@ const handleGenerateDigest = async () => {
 
 if (location.hash) {
   const h = location.hash.substring(1);
-  if (['4h','daily','weekly','monthly','marks','sources'].includes(h)) {
+  if (['4h','daily','weekly','monthly','marks','sources','connect'].includes(h)) {
     currentType = h;
     document.querySelector('.tab.active')?.classList.remove('active');
     const t = document.querySelector('.tab[data-type="'+h+'"]');

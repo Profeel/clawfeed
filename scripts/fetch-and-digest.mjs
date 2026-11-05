@@ -16,6 +16,7 @@
  * 需要 .env 中配置:
  *   API_KEY          — ClawFeed 服务 API Key
  *   DIGEST_* / LLM_* / DEEPSEEK_API_KEY — 至少配置一组摘要 LLM
+ *   LLM_MODEL=openrouter/free-latest 时按上线时间自动选用最新 free 文本模型并故障切换
  *
  * --deep 模式: 对 Digest 精选的每篇文章抓取原文，生成 250 字中文深度摘要
  */
@@ -28,7 +29,10 @@ import { fileURLToPath } from 'url';
 import { createHmac, createHash } from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import {
-  needsZhTranslation,
+  FEISHU_CARD_PROMPT,
+  attachFeishuSourceText,
+  parseTranslatedItems,
+  prepareFeishuCardItem,
   resolveTranslationProvider,
   translateFeishuItems,
   translateFeishuText,
@@ -38,6 +42,22 @@ import {
   extractCompletionText,
   resolveDigestProviders,
 } from '../src/digest-resilience.mjs';
+import {
+  expandOpenRouterAutoProviders,
+  isOpenRouterAutoFreeModel,
+  selectLatestOpenRouterFreeModels,
+} from '../src/openrouter-free.mjs';
+import {
+  FEATURED_CATEGORY,
+  HOT_CATEGORY,
+  MAX_HOT_ITEMS,
+  MIN_DIGEST_ITEMS,
+  filterItemsBySourceIds,
+  filterPublicItems,
+  isHotItem,
+  mergeFeaturedFallback,
+  normalizeDigestCategories,
+} from '../src/digest-categories.mjs';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -61,7 +81,7 @@ const DEEPSEEK_API_KEY = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY ||
 const LLM_BASE_URL = env.LLM_BASE_URL || process.env.LLM_BASE_URL || '';
 const LLM_MODEL = env.LLM_MODEL || process.env.LLM_MODEL || '';
 const LLM_API_KEY = env.LLM_API_KEY || process.env.LLM_API_KEY || '';
-const DIGEST_PROVIDERS = resolveDigestProviders({
+let DIGEST_PROVIDERS = resolveDigestProviders({
   digestApiKey: env.DIGEST_API_KEY || process.env.DIGEST_API_KEY || '',
   digestBaseUrl: env.DIGEST_BASE_URL || process.env.DIGEST_BASE_URL || '',
   digestModel: env.DIGEST_MODEL || process.env.DIGEST_MODEL || '',
@@ -98,6 +118,7 @@ const getArg = (flag) => {
 
 const DIGEST_TYPE = getArg('--type') || '4h';
 const DEEP_MODE = args.includes('--deep');
+const FEISHU_LATEST = args.includes('--feishu-latest');
 const VALID_TYPES = ['4h', 'daily', 'weekly', 'monthly'];
 if (!VALID_TYPES.includes(DIGEST_TYPE)) {
   console.error(`错误: --type 必须是 ${VALID_TYPES.join(' | ')} 之一`);
@@ -201,20 +222,20 @@ async function postJson(url, body) {
 
 // ── Feishu / Lark Webhook Push ─────────────────────────────────────────────
 
-function buildFeishuSign() {
-  if (!FEISHU_SECRET) return {};
+function buildFeishuSign(secret = FEISHU_SECRET) {
+  if (!secret) return {};
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const stringToSign = `${timestamp}\n${FEISHU_SECRET}`;
+  const stringToSign = `${timestamp}\n${secret}`;
   const sign = createHmac('sha256', stringToSign).update('').digest('base64');
   return { timestamp, sign };
 }
 
-async function postFeishu(card) {
-  const body = { msg_type: 'interactive', card, ...buildFeishuSign() };
+async function postFeishuCard(webhook, card, secret) {
+  const body = { msg_type: 'interactive', card, ...buildFeishuSign(secret) };
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const resp = await postJson(FEISHU_WEBHOOK, body);
+      const resp = await postJson(webhook, body);
       const result = JSON.parse(resp.body);
       if (resp.status >= 400 || (result.code !== 0 && result.StatusCode !== 0)) {
         throw new Error(result.msg || result.StatusMessage || `HTTP ${resp.status}`);
@@ -232,6 +253,10 @@ async function postFeishu(card) {
   return false;
 }
 
+async function postFeishu(card) {
+  return postFeishuCard(FEISHU_WEBHOOK, card, FEISHU_SECRET);
+}
+
 function isValidHttpUrl(url) {
   try {
     const parsed = new URL(String(url || '').trim());
@@ -247,7 +272,7 @@ function isPlaceholderText(text) {
 }
 
 function buildArticleCard(item, index, total) {
-  const isHot = item.category === '重要动态';
+  const isHot = isHotItem(item);
   const tag = isHot ? '🔥' : '📰';
   const headerColor = isHot ? 'red' : 'turquoise';
   const url = isValidHttpUrl(item.url) ? String(item.url).trim() : '';
@@ -290,13 +315,13 @@ function buildArticleCard(item, index, total) {
 
 // Build a summary header card
 function buildHeaderCard(items, meta) {
-  const hotCount = items.filter(i => i.category === '重要动态').length;
+  const hotCount = items.filter(isHotItem).length;
   const otherCount = items.length - hotCount;
   const typeLabels = { '4h': '4小时简报', daily: '日报', weekly: '周报', monthly: '月报' };
   const typeLabel = typeLabels[meta.digestType] || '简报';
 
-  const toc = items.map((item, n) => {
-    const tag = item.category === '重要动态' ? '🔥' : '·';
+  const toc = items.map((item) => {
+    const tag = isHotItem(item) ? '🔥' : '·';
     return `${tag} ${item.title}`;
   }).join('\n');
 
@@ -317,83 +342,133 @@ function buildHeaderCard(items, meta) {
   };
 }
 
-const FEISHU_TRANSLATE_PROMPT =
-  '你是新闻译者。把标题和摘要译成通顺的简体中文。' +
-  '保留公司名、产品名、人名等专有名词，但动词、解释和正文必须使用中文。' +
-  '标题如果几乎全是英文专有名词，必须补上中文动词，例如「发布 llm-gemini 0.34」。' +
-  '不要添加评论，不要翻译或改写 URL。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]';
+let FEISHU_PROVIDERS = TRANSLATION_PROVIDER.apiKey
+  ? [TRANSLATION_PROVIDER]
+  : DIGEST_PROVIDERS.filter((provider) => provider.apiKey);
 
-function prepareItemForTranslation(item) {
-  const clean = (value, max) => String(value || '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#8217;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/https?:\/\/\S+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
-  return { ...item, title: clean(item.title, 60), summary: clean(item.summary, 160) };
+const needsOpenRouterFreeRefresh = (providers) =>
+  (providers || []).some((provider) =>
+    /openrouter/i.test(provider?.baseUrl || '') && isOpenRouterAutoFreeModel(provider?.model)
+  );
+
+async function refreshOpenRouterFreeProviders() {
+  if (!needsOpenRouterFreeRefresh(DIGEST_PROVIDERS) && !needsOpenRouterFreeRefresh(FEISHU_PROVIDERS)) {
+    return;
+  }
+
+  const apiKey = [...DIGEST_PROVIDERS, ...FEISHU_PROVIDERS]
+    .find((provider) => /openrouter/i.test(provider?.baseUrl || '') && provider.apiKey)
+    ?.apiKey;
+  let modelIds = ['openrouter/free'];
+
+  if (apiKey) {
+    try {
+      const res = await httpFetch('https://openrouter.ai/api/v1/models?sort=newest', {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://lotamate.com/cf/',
+          'X-Title': 'ClawFeed Digest',
+        },
+        timeout: 25000,
+        maxBytes: 8_000_000,
+      });
+      const parsed = JSON.parse(res.body);
+      if (res.status >= 400) {
+        throw new Error(parsed?.error?.message || `LLM HTTP ${res.status}`);
+      }
+      modelIds = selectLatestOpenRouterFreeModels(parsed.data || [], { limit: 6 });
+      log(`OpenRouter free 模型（新→旧）: ${modelIds.join(', ')}`);
+    } catch (error) {
+      warn(`OpenRouter 模型列表失败，回退 openrouter/free: ${error.message}`);
+    }
+  }
+
+  DIGEST_PROVIDERS = expandOpenRouterAutoProviders(DIGEST_PROVIDERS, modelIds);
+  FEISHU_PROVIDERS = expandOpenRouterAutoProviders(FEISHU_PROVIDERS, modelIds);
+}
+
+const chineseCharCount = (text) => (String(text || '').match(/[\u3400-\u9fff]/g) || []).length;
+
+function assertFeishuTranslation(content, { requireJson = false } = {}) {
+  const text = String(content || '').trim();
+  if (!text) throw new Error('译文为空');
+  if (requireJson) {
+    const items = parseTranslatedItems(text);
+    if (!items?.length) throw new Error(`译文不是有效的 JSON 数组: ${text.slice(0, 80)}`);
+    const hasChinese = items.some((item) =>
+      chineseCharCount(item.title) >= 2 || chineseCharCount(item.summary) >= 6
+    );
+    if (!hasChinese) throw new Error(`译文缺少中文: ${text.slice(0, 80)}`);
+    return text;
+  }
+  if (chineseCharCount(text) < 8) throw new Error(`译文缺少中文: ${text.slice(0, 80)}`);
+  return text;
+}
+
+async function completeWithFeishuProvider(messages, maxTokens, { requireJson = false } = {}) {
+  const { content } = await completeWithProviderFallback(FEISHU_PROVIDERS, {
+    attempts: 1,
+    request: async (provider) => {
+      const result = await callChatCompletion(messages, maxTokens, provider);
+      if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
+      const text = extractCompletionText(result);
+      assertFeishuTranslation(text, { requireJson });
+      return { choices: [{ message: { content: text } }] };
+    },
+    onFailure: ({ provider, error }) => {
+      warn(`飞书翻译模型 ${provider.source}:${provider.model} 失败: ${error.message}`);
+    },
+  });
+  return content;
 }
 
 async function translateChunkToZh(chunk) {
-  return translateFeishuItems(chunk.map(prepareItemForTranslation), {
-    apiKey: TRANSLATION_PROVIDER.apiKey,
+  return translateFeishuItems(chunk.map(prepareFeishuCardItem), {
+    apiKey: FEISHU_PROVIDERS[0]?.apiKey || TRANSLATION_PROVIDER.apiKey,
     attempts: 4,
-    requestTranslation: async (payload) => {
-      const result = await callChatCompletion([
-        { role: 'system', content: FEISHU_TRANSLATE_PROMPT },
-        { role: 'user', content: JSON.stringify(payload) },
-      ], 2500, TRANSLATION_PROVIDER);
-      if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
-      return extractCompletionText(result);
-    },
+    rewriteAll: true,
+    requestTranslation: (payload) => completeWithFeishuProvider([
+      { role: 'system', content: FEISHU_CARD_PROMPT },
+      { role: 'user', content: JSON.stringify(payload) },
+    ], 2500, { requireJson: true }),
     onRetry: async ({ attempt, remaining, error }) => {
       const reason = error?.message || `仍有 ${remaining.length} 个字段不是中文`;
-      warn(`飞书中文翻译第 ${attempt} 次未完成，准备重试: ${reason}`);
+      warn(`飞书标题与简述第 ${attempt} 次未完成，准备重试: ${reason}`);
       await sleep(attempt * 1000);
     },
   });
 }
 
 async function translateItemsToZh(items) {
-  const pendingCount = items.filter((item) =>
-    needsZhTranslation(item.title) || needsZhTranslation(item.summary)
-  ).length;
-  if (!pendingCount) return items;
+  if (!items?.length) return items;
 
-  log(`正在将飞书内容译成中文（${pendingCount}/${items.length} 条含英文，每批 2 条）...`);
+  log(`正在生成飞书中文标题与简述（${items.length} 条，每批 2 条）...`);
   const zhItems = [];
   const chunkSize = 2;
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize);
-    log(`  翻译 ${i + 1}-${Math.min(i + chunkSize, items.length)}/${items.length}...`);
+    log(`  总结 ${i + 1}-${Math.min(i + chunkSize, items.length)}/${items.length}...`);
     try {
       zhItems.push(...await translateChunkToZh(chunk));
     } catch (error) {
       if (chunk.length === 1) throw error;
-      warn(`小批次未过中文门禁，改为逐条翻译: ${error.message}`);
+      warn(`小批次未过中文门禁，改为逐条总结: ${error.message}`);
       for (const item of chunk) {
         zhItems.push(...await translateChunkToZh([item]));
       }
     }
   }
-  log('✓ 飞书中文翻译完成并通过中文门禁');
+  log('✓ 飞书标题与简述已生成并通过中文门禁');
   return zhItems;
 }
 
 async function translateTextToZh(text) {
   return translateFeishuText(text, {
-    apiKey: TRANSLATION_PROVIDER.apiKey,
-    requestTranslation: async (content) => {
-      const result = await callChatCompletion([
-        { role: 'system', content: '把用户文本完整译成简体中文。保留链接和专有名词，但所有正文必须使用中文。只输出译文，不要解释。' },
-        { role: 'user', content: String(content).slice(0, 3500) },
-      ], 2000, TRANSLATION_PROVIDER);
-      if (result.error) throw new Error(result.error.message || result.error.msg || '翻译服务返回错误');
-      return extractCompletionText(result);
-    },
+    apiKey: FEISHU_PROVIDERS[0]?.apiKey || TRANSLATION_PROVIDER.apiKey,
+    requestTranslation: (content) => completeWithFeishuProvider([
+      { role: 'system', content: '把用户文本完整译成简体中文。保留链接和专有名词，但所有正文必须使用中文。只输出译文，不要解释。' },
+      { role: 'user', content: String(content).slice(0, 3500) },
+    ], 2000),
     onRetry: async ({ attempt, error }) => {
       warn(`飞书纯文本翻译第 ${attempt} 次未完成，准备重试: ${error?.message || '译文不是中文'}`);
       await sleep(attempt * 1000);
@@ -401,15 +476,18 @@ async function translateTextToZh(text) {
   });
 }
 
-// Send each article as an individual Feishu card
-async function sendFeishuArticles(items, meta, { onItemSent = () => {} } = {}) {
-  if (!FEISHU_WEBHOOK || !items?.length) return;
+async function deliverFeishuCards(zhItems, meta, {
+  webhook,
+  secret,
+  onItemSent = () => {},
+  label = '飞书',
+  throwOnPartial = true,
+} = {}) {
+  if (!webhook || !zhItems?.length) return [];
 
-  const zhItems = await translateItemsToZh(items);
-  log(`\n正在推送 ${zhItems.length} 条到飞书...`);
-
-  const headerSent = await postFeishu(buildHeaderCard(zhItems, meta));
-  if (headerSent) process.stdout.write('  ✓ 目录卡片\n');
+  log(`\n正在推送 ${zhItems.length} 条到${label}...`);
+  const headerSent = await postFeishuCard(webhook, buildHeaderCard(zhItems, meta), secret);
+  if (headerSent) process.stdout.write(`  ✓ ${label}目录卡片\n`);
   await sleep(600);
 
   let ok = 0;
@@ -417,23 +495,92 @@ async function sendFeishuArticles(items, meta, { onItemSent = () => {} } = {}) {
   const failedItems = [];
   for (let i = 0; i < zhItems.length; i++) {
     const card = buildArticleCard(zhItems[i], i + 1, zhItems.length);
-    const sent = await postFeishu(card);
+    const sent = await postFeishuCard(webhook, card, secret);
     if (sent) {
       ok++;
-      sentItems.push(items[i]);
-      await onItemSent(items[i]);
-      process.stdout.write(`  ✓ [${i + 1}/${zhItems.length}] ${zhItems[i].title?.slice(0, 30) || '-'}\n`);
+      sentItems.push(zhItems[i]);
+      await onItemSent(zhItems[i]);
+      process.stdout.write(`  ✓ ${label} [${i + 1}/${zhItems.length}] ${zhItems[i].title?.slice(0, 30) || '-'}\n`);
     } else {
-      failedItems.push(items[i]);
-      process.stdout.write(`  ✗ [${i + 1}/${zhItems.length}] 推送失败\n`);
+      failedItems.push(zhItems[i]);
+      process.stdout.write(`  ✗ ${label} [${i + 1}/${zhItems.length}] 推送失败\n`);
     }
     if (i < zhItems.length - 1) await sleep(600);
   }
 
-  log(`✅ 飞书推送完成（${ok}/${zhItems.length}）`);
-  if (!headerSent || failedItems.length > 0) {
-    throw new Error(`飞书推送未完整成功（目录 ${headerSent ? '成功' : '失败'}，文章 ${ok}/${zhItems.length}）`);
+  log(`✅ ${label}推送完成（${ok}/${zhItems.length}）`);
+  if (throwOnPartial && (!headerSent || failedItems.length > 0)) {
+    throw new Error(`${label}推送未完整成功（目录 ${headerSent ? '成功' : '失败'}，文章 ${ok}/${zhItems.length}）`);
   }
+  return sentItems;
+}
+
+function loadEnabledUserChannels(db) {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT uc.user_id, uc.feishu_webhook, uc.feishu_secret,
+             GROUP_CONCAT(us.source_id) AS source_ids
+      FROM user_channels uc
+      LEFT JOIN user_subscriptions us ON us.user_id = uc.user_id
+      WHERE uc.feishu_enabled = 1
+        AND uc.feishu_webhook IS NOT NULL
+        AND uc.feishu_webhook != ''
+      GROUP BY uc.user_id
+    `).all();
+  } catch {
+    return [];
+  }
+}
+
+async function fanOutUserFeishu(zhItems, meta) {
+  const db = await getPushDbAsync();
+  const channels = loadEnabledUserChannels(db);
+  if (!channels.length) return;
+
+  for (const channel of channels) {
+    const sourceIds = String(channel.source_ids || '')
+      .split(',')
+      .map((id) => Number(id))
+      .filter(Boolean);
+    const selected = sourceIds.length
+      ? filterItemsBySourceIds(zhItems, sourceIds)
+      : [];
+    if (!selected.length) {
+      log(`跳过用户 ${channel.user_id} 的飞书推送：勾选源没有对应条目`);
+      continue;
+    }
+    try {
+      await deliverFeishuCards(selected, meta, {
+        webhook: channel.feishu_webhook,
+        secret: channel.feishu_secret || '',
+        label: `用户${channel.user_id}飞书`,
+        throwOnPartial: false,
+      });
+    } catch (error) {
+      warn(`用户 ${channel.user_id} 飞书推送失败: ${error.message}`);
+    }
+  }
+}
+
+// Send each article as an individual Feishu card
+async function sendFeishuArticles(items, meta, { onItemSent = () => {}, sourceItems = [] } = {}) {
+  if (!items?.length) return [];
+  const channels = loadEnabledUserChannels(await getPushDbAsync());
+  if (!FEISHU_WEBHOOK && !channels.length) return [];
+
+  const zhItems = await translateItemsToZh(attachFeishuSourceText(items, sourceItems));
+  const officialItems = filterPublicItems(zhItems);
+  const sentItems = FEISHU_WEBHOOK
+    ? await deliverFeishuCards(officialItems.length ? officialItems : zhItems, meta, {
+      webhook: FEISHU_WEBHOOK,
+      secret: FEISHU_SECRET,
+      onItemSent,
+      label: '官方飞书',
+    })
+    : [];
+
+  await fanOutUserFeishu(zhItems, meta);
   return sentItems;
 }
 
@@ -525,7 +672,7 @@ async function fetchRss(url, limit = 20, timeout) {
       xmlText(block, 'description') ||
       xmlText(block, 'summary') ||
       xmlText(block, 'content')
-    ).slice(0, 400);
+    ).slice(0, 2400);
     const pubDate = xmlText(block, 'pubDate') || xmlText(block, 'published') || xmlText(block, 'updated');
     const author = xmlText(block, 'author') || xmlText(block, 'dc:creator') || xmlText(block, 'name');
     if (!title && !link) continue;
@@ -570,7 +717,7 @@ async function fetchReddit({ subreddit, sort = 'hot', limit = 20 } = {}) {
       title: p.title,
       url: p.url?.startsWith('/r/') ? `https://www.reddit.com${p.url}` : (p.url || `https://www.reddit.com${p.permalink}`),
       description: p.selftext
-        ? p.selftext.slice(0, 300)
+        ? p.selftext.slice(0, 1800)
         : `↑${p.score} · ${p.num_comments} 评论 · r/${p.subreddit}`,
       author: p.author,
     }));
@@ -810,56 +957,79 @@ function isItemPushedBefore(history, item) {
 }
 
 // ── DeepSeek Digest Generator ──────────────────────────────────────────────
-function callChatCompletion(messages, maxTokens, { apiKey, baseUrl, model }) {
+function llmErrorMessage(error) {
+  const cause = error?.cause?.message || error?.cause?.code || '';
+  const message = error?.message || String(error);
+  if (/aborted|timeout|Timeout/i.test(message) || /aborted|timeout|Timeout/i.test(cause)) {
+    return 'LLM 请求超时';
+  }
+  return cause && !message.includes(cause) ? `${message}: ${cause}` : message;
+}
+
+async function callChatCompletion(messages, maxTokens, { apiKey, baseUrl, model, timeoutMs = 120_000 }) {
   const payload = JSON.stringify({
     model,
     messages,
     temperature: 0.7,
     max_tokens: maxTokens,
+    // 火山方舟推理模型的 thinking 会占用 max_tokens 额度导致 JSON 截断，显式关闭思考模式
+    ...(/volces\.com/i.test(baseUrl) ? { thinking: { type: 'disabled' } } : {}),
   });
-
-  const endpoint = new URL(`${baseUrl.replace(/\/+$/, '')}/chat/completions`);
-
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: endpoint.hostname,
-      port: endpoint.port || 443,
-      path: `${endpoint.pathname}${endpoint.search}`,
+  const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+    'HTTP-Referer': 'https://lotamate.com/cf/',
+    'X-Title': 'ClawFeed Digest',
+    'User-Agent': 'ClawFeed-Digest/1.0',
+  };
+  const isOpenRouter = /openrouter/i.test(baseUrl);
+  const attempt = async (useProxy) => {
+    const opts = {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://clawfeed.kevinhe.io',
-        'X-Title': 'ClawFeed Digest',
-        'Content-Length': Buffer.byteLength(payload),
-      },
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (res.statusCode >= 400) {
-            reject(new Error(parsed.error?.message || parsed.message || `LLM HTTP ${res.statusCode}`));
-            return;
-          }
-          resolve(parsed);
-        } catch (error) {
-          if (error instanceof SyntaxError) reject(new Error(`LLM 响应解析失败: ${data.slice(0, 300)}`));
-          else reject(error);
-        }
-      });
-    });
-    req.setTimeout(120000, () => { req.destroy(); reject(new Error('LLM 请求超时（120s）')); });
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
-  });
+      headers,
+      body: payload,
+      signal: AbortSignal.timeout(timeoutMs),
+    };
+    if (useProxy && proxyDispatcher) opts.dispatcher = proxyDispatcher;
+    const res = await undiciFetch(url, opts);
+    const data = await res.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      throw new Error(`LLM 响应解析失败: ${data.slice(0, 300)}`);
+    }
+    if (res.status >= 400 || parsed?.error) {
+      throw new Error(parsed?.error?.message || parsed?.message || `LLM HTTP ${res.status}`);
+    }
+    return parsed;
+  };
+
+  try {
+    if (proxyDispatcher) return await attempt(true);
+    return await attempt(false);
+  } catch (error) {
+    const code = error?.cause?.code || error?.code || '';
+    const canFallbackDirect = !isOpenRouter
+      && proxyDispatcher
+      && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(code);
+    if (canFallbackDirect) return attempt(false);
+    throw new Error(llmErrorMessage(error));
+  }
 }
 
 async function callDigestLlm(messages, maxTokens = 4096) {
   return completeWithProviderFallback(DIGEST_PROVIDERS, {
-    request: (provider) => callChatCompletion(messages, maxTokens, provider),
+    request: async (provider) => {
+      const result = await callChatCompletion(messages, maxTokens, provider);
+      const content = extractCompletionText(result);
+      if (!content) throw new Error('返回空内容');
+      if (!/\[[\s\S]*"title"[\s\S]*"summary"[\s\S]*\]/.test(content)) {
+        throw new Error(`返回内容不是 JSON 数组: ${content.slice(0, 80)}`);
+      }
+      return result;
+    },
     onFailure: ({ provider, round, error }) => {
       warn(`摘要模型 ${provider.source}:${provider.model} 第 ${round} 轮失败: ${error.message}`);
     },
@@ -969,7 +1139,7 @@ function deduplicateItems(items) {
     if (seen.has(normUrl)) {
       const existing = seen.get(normUrl);
       // Keep the one with higher category priority (重要动态 > 精选资讯)
-      if (item.category === '重要动态' && existing.category !== '重要动态') {
+      if (isHotItem(item) && !isHotItem(existing)) {
         seen.set(normUrl, item);
         const idx = result.indexOf(existing);
         if (idx !== -1) result[idx] = item;
@@ -981,7 +1151,7 @@ function deduplicateItems(items) {
     let isDup = false;
     for (const [existUrl, existItem] of seen) {
       if (titlesAreSimilar(item.title, existItem.title)) {
-        if (item.category === '重要动态' && existItem.category !== '重要动态') {
+        if (isHotItem(item) && !isHotItem(existItem)) {
           seen.delete(existUrl);
           const idx = result.indexOf(existItem);
           if (idx !== -1) result[idx] = item;
@@ -1003,24 +1173,45 @@ function deduplicateItems(items) {
   return result;
 }
 
-function buildDigestFromItems(structuredItems, digestType, dateStr) {
-  const hotItems = structuredItems.filter(i => i.category === '重要动态').slice(0, 4);
-  const hotUrls = new Set(hotItems.map(i => i.url));
-  const otherItems = structuredItems.filter(i => i.category !== '重要动态' || !hotUrls.has(i.url));
+function stampSourceMeta(items, rawItems = []) {
+  const byUrl = new Map();
+  for (const raw of rawItems) {
+    const key = normalizeUrlForHash(raw?.url);
+    if (!key) continue;
+    byUrl.set(key, raw);
+  }
+  return (items || []).map((item) => {
+    const raw = byUrl.get(normalizeUrlForHash(item?.url));
+    const sourceId = Number(raw?._sourceId || item.sourceId || 0) || 0;
+    const isPublic = Number(raw?._sourcePublic ?? item.isPublic ?? (raw ? 0 : 1)) === 1;
+    return {
+      ...item,
+      sourceId,
+      isPublic,
+      source: item.source || raw?._sourceName || '',
+    };
+  });
+}
+
+function buildDigestFromItems(structuredItems, digestType, dateStr, extraMeta = {}) {
+  const items = normalizeDigestCategories(structuredItems);
+  const hotItems = items.filter(isHotItem);
+  const otherItems = items.filter((item) => !isHotItem(item));
   const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
   let markdown = `${icons[digestType] || '☀️'} AI 快报 | ${dateStr} CST\n\n`;
   if (hotItems.length > 0) {
-    markdown += '🔥 重要动态\n';
+    markdown += `🔥 ${HOT_CATEGORY}\n`;
     for (const item of hotItems) markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
     markdown += '\n';
   }
   if (otherItems.length > 0) {
-    markdown += '📰 精选资讯\n';
+    markdown += `📰 ${FEATURED_CATEGORY}\n`;
     for (const item of otherItems) markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
   }
-  return { content: markdown, metadata: { items: [...hotItems, ...otherItems], dateStr, digestType } };
+  return { content: markdown, metadata: { items, dateStr, digestType, ...extraMeta } };
 }
 
+// Ranking signal only. Do not use this for category — brand names match almost every AI item.
 const HOT_ITEM_RE = /融资|发布|收购|开源|突破|上市|GPT|Claude|Gemini|DeepSeek|Anthropic|OpenAI|\$\d|亿美元|万美元|launch|release|funding/i;
 
 function generateHeuristicDigest(allItems, digestType) {
@@ -1053,7 +1244,7 @@ function generateHeuristicDigest(allItems, digestType) {
     if (picked.length >= 12) break;
   }
 
-  const structuredItems = picked.map((item) => {
+  const structuredItems = picked.map((item, index) => {
     const title = stripHtml(item.title).slice(0, 80);
     let summary = stripHtml(item.description || '');
     if (summary.length > 240) summary = `${summary.slice(0, 237)}…`;
@@ -1062,12 +1253,16 @@ function generateHeuristicDigest(allItems, digestType) {
       title,
       url: item.url,
       summary,
-      category: HOT_ITEM_RE.test(`${item.title || ''} ${item.description || ''}`) ? '重要动态' : '精选资讯',
+      // Score order is already highest first. Brand-name regex is too broad for
+      // category, so only the top N stay 重要动态 and the rest are 精选资讯.
+      category: index < MAX_HOT_ITEMS ? HOT_CATEGORY : FEATURED_CATEGORY,
       source: item._sourceName || '',
+      sourceId: item._sourceId || 0,
+      isPublic: Number(item._sourcePublic) === 1,
     };
   });
   if (!structuredItems.length) throw new Error('兜底摘要失败：没有可用的标题和链接');
-  return buildDigestFromItems(structuredItems, digestType, dateStr);
+  return buildDigestFromItems(stampSourceMeta(structuredItems, allItems), digestType, dateStr);
 }
 
 async function generateDigest(allItems, digestType) {
@@ -1082,7 +1277,7 @@ async function generateDigest(allItems, digestType) {
   const itemLines = allItems.map((item, i) => {
     const parts = [`${i + 1}. [${item._sourceName}] ${item.title || '(无标题)'}`];
     if (item.url) parts.push(`   URL: ${item.url}`);
-    if (item.description) parts.push(`   摘要: ${item.description.slice(0, 200)}`);
+    if (item.description) parts.push(`   正文: ${item.description.slice(0, 1600)}`);
     return parts.join('\n');
   }).join('\n\n');
 
@@ -1090,17 +1285,17 @@ async function generateDigest(allItems, digestType) {
 
 每个元素格式：
 {
-  "title": "中文标题（15字以内，动词开头，点明核心事件）",
+  "title": "中文标题（15字以内，动词开头，总结整篇核心事件，不要翻译原文标题或开头几句）",
   "url": "必须来自输入的真实链接，不可编造",
-  "summary": "2-3 句话的 AI 简报，严格 ≤140 个汉字。第①句：谁做了什么（核心事实）。第②句：为什么重要/有何影响。第③句（可选）：行业启示或值得关注的延伸。不要用序号，用自然段落。语言简练有力，禁止空话套话。",
-  "category": "重要动态 | 精选资讯",
+  "summary": "2-3 句话的 AI 简报，严格 ≤140 个汉字。必须综合所给正文的要点，禁止把开头几句直接翻译或扩写。第①句：谁做了什么（核心事实）。第②句：为什么重要/有何影响。第③句（可选）：行业启示或值得关注的延伸。不要用序号，用自然段落。语言简练有力，禁止空话套话。",
+  "category": "精选资讯",
   "source": "来源名称"
 }
 
 严格规则：
-1. 输出 10-15 条。"重要动态"≤4 条（仅限：大额融资 >$100M、重大产品发布、突破性研究、重要政策）
-2. summary 必须 ≤140 个汉字（约 3 句话）。每句话都必须有实际信息量，禁止出现"值得关注""引发热议"等空洞表述
-3. title 必须是动宾结构，如"OpenAI 发布 GPT-5"而非"关于 GPT-5 的发布"
+1. 输出 10-15 条，不能只输出「重要动态」。默认 category 必须是「精选资讯」，精选资讯至少 6 条。「重要动态」最多 4 条，仅限大额融资 >$100M、重大产品发布、突破性研究或重要政策；不够重大时可以少于 4 条甚至为 0。活动预告、转发评论、招聘、营销和普通更新一律「精选资讯」
+2. summary 必须 ≤140 个汉字（约 3 句话），且是对全文/所给正文的总结，不是导语翻译。每句话都必须有实际信息量，禁止出现"值得关注""引发热议"等空洞表述
+3. title 必须是动宾结构，如"OpenAI 发布 GPT-5"而非"关于 GPT-5 的发布"；禁止把原文标题或前几句直接译成中文
 4. URL 必须完整且来自输入，不可编造或省略
 5. 全部中文输出。去除广告、营销内容
 6. **严格去重**（最重要的规则）：
@@ -1179,27 +1374,15 @@ async function generateDigest(allItems, digestType) {
 
   // Deduplicate items by URL and similar titles
   structuredItems = deduplicateItems(structuredItems);
-
-  // Build markdown from structured items (for web display)
-  const hotItems = structuredItems.filter(i => i.category === '重要动态');
-  const otherItems = structuredItems.filter(i => i.category !== '重要动态');
-  const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
-  let markdown = `${icons[digestType] || '☀️'} AI 快报 | ${dateStr} CST\n\n`;
-  if (hotItems.length > 0) {
-    markdown += `🔥 重要动态\n`;
-    for (const item of hotItems) {
-      markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-    }
-    markdown += '\n';
-  }
-  if (otherItems.length > 0) {
-    markdown += `📰 精选资讯\n`;
-    for (const item of otherItems) {
-      markdown += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-    }
+  structuredItems = stampSourceMeta(structuredItems, allItems);
+  if (structuredItems.length < MIN_DIGEST_ITEMS) {
+    log(`摘要只产出 ${structuredItems.length} 条，用采集条目补足精选资讯`);
+    const heuristic = generateHeuristicDigest(allItems, digestType);
+    structuredItems = mergeFeaturedFallback(structuredItems, heuristic.metadata.items);
+    structuredItems = stampSourceMeta(structuredItems, allItems);
   }
 
-  return { content: markdown, metadata: { items: structuredItems, dateStr, digestType } };
+  return buildDigestFromItems(structuredItems, digestType, dateStr);
 }
 
 // ── Deep mode: article fetch + per-article summarization ──────────────────
@@ -1388,6 +1571,33 @@ function tryRescueJsonItems(text) {
   return null;
 }
 
+async function pushLatestDigestToFeishu() {
+  const db = await getPushDbAsync();
+  if (!db) throw new Error('无法打开 Digest 数据库');
+  const row = db.prepare(
+    'SELECT id, type, content, metadata, created_at FROM digests WHERE type = ? ORDER BY id DESC LIMIT 1'
+  ).get(DIGEST_TYPE);
+  if (!row) throw new Error(`没有可补推的 ${DIGEST_TYPE} Digest`);
+
+  let metadata = {};
+  try {
+    metadata = JSON.parse(row.metadata || '{}');
+  } catch {
+    metadata = {};
+  }
+  const items = metadata.items?.length ? metadata.items : (tryRescueJsonItems(row.content) || []);
+  if (!items.length) throw new Error(`Digest ${row.id} 没有可推送条目`);
+
+  log(`补推最新 Digest id=${row.id}（${items.length} 条，${row.created_at}）`);
+  const sent = await sendFeishuArticles(items, {
+    ...metadata,
+    digestType: DIGEST_TYPE,
+  }, {
+    onItemSent: async (item) => recordPushedItems(db, [item], DIGEST_TYPE),
+  });
+  log(`📝 已记录 ${sent.length} 条飞书推送`);
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 async function main() {
   // Pre-flight checks
@@ -1398,6 +1608,14 @@ async function main() {
   if (!DIGEST_PROVIDERS.length) {
     console.error('❌ 请配置 DIGEST_*、LLM_* 或 DEEPSEEK_API_KEY 作为摘要 provider');
     process.exit(1);
+  }
+
+  await refreshOpenRouterFreeProviders();
+  if (!FEISHU_PROVIDERS.length) FEISHU_PROVIDERS = DIGEST_PROVIDERS.filter((provider) => provider.apiKey);
+
+  if (FEISHU_LATEST) {
+    await pushLatestDigestToFeishu();
+    return;
   }
 
   log(`开始生成 ${DIGEST_TYPE} Digest...`);
@@ -1421,7 +1639,13 @@ async function main() {
       const items = await fetchSource(source);
       console.log(`✓ ${items.length} 条`);
       for (const item of items) {
-        allItems.push({ ...item, _sourceName: source.name, _sourceType: source.type });
+        allItems.push({
+          ...item,
+          _sourceName: source.name,
+          _sourceType: source.type,
+          _sourceId: source.id,
+          _sourcePublic: Number(source.is_public) === 1,
+        });
       }
     } catch (e) {
       console.log(`✗ 失败: ${e.message}`);
@@ -1500,22 +1724,13 @@ async function main() {
     metadata.items = metadata.items.filter(item => !isItemPushedBefore(pushHistory, item));
     if (metadata.items.length < beforeCount) {
       log(`二次去重: ${beforeCount} → ${metadata.items.length} 条（过滤已推送 ${beforeCount - metadata.items.length} 条）`);
-      // Rebuild markdown content from remaining items
       if (metadata.items.length > 0) {
-        const hotItems = metadata.items.filter(i => i.category === '重要动态');
-        const otherItems = metadata.items.filter(i => i.category !== '重要动态');
-        const icons = { '4h': '☀️', daily: '📰', weekly: '📅', monthly: '📊' };
-        let md = `${icons[DIGEST_TYPE] || '☀️'} AI 快报 | ${metadata.dateStr} CST\n\n`;
-        if (hotItems.length > 0) {
-          md += '🔥 重要动态\n';
-          for (const item of hotItems) md += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-          md += '\n';
-        }
-        if (otherItems.length > 0) {
-          md += '📰 精选资讯\n';
-          for (const item of otherItems) md += `• [${item.title}] — ${item.summary} [链接](${item.url})\n`;
-        }
-        content = md;
+        ({ content, metadata } = buildDigestFromItems(
+          metadata.items,
+          DIGEST_TYPE,
+          metadata.dateStr,
+          { fallback: metadata.fallback },
+        ));
       }
     }
   }
@@ -1549,37 +1764,38 @@ async function main() {
     log(`✅ Digest 保存成功！id = ${postRes.data.id}`);
     log(`   查看: http://127.0.0.1:${PORT}`);
 
-    // Push to Feishu group bot
+    // Push to official Feishu group and any user-configured webhooks
     let pushedItems = [];
-    if (FEISHU_WEBHOOK) {
-      if (metadata.items?.length > 0) {
-        pushedItems = await sendFeishuArticles(metadata.items, metadata, {
+    if (metadata.items?.length > 0) {
+      metadata.items = stampSourceMeta(metadata.items, dedupedItems);
+      pushedItems = await sendFeishuArticles(metadata.items, metadata, {
+        sourceItems: dedupedItems,
+        onItemSent: async (item) => {
+          if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
+        },
+      });
+    } else if (FEISHU_WEBHOOK) {
+      const rescued = tryRescueJsonItems(content);
+      if (rescued) {
+        log('\n内容为 JSON 格式，已抢救解析为结构化卡片推送');
+        const now = new Date();
+        const rescuedMeta = {
+          digestType: DIGEST_TYPE,
+          dateStr: now.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit',
+          }),
+        };
+        pushedItems = await sendFeishuArticles(stampSourceMeta(rescued, dedupedItems), rescuedMeta, {
+          sourceItems: dedupedItems,
           onItemSent: async (item) => {
             if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
           },
         });
       } else {
-        const rescued = tryRescueJsonItems(content);
-        if (rescued) {
-          log('\n内容为 JSON 格式，已抢救解析为结构化卡片推送');
-          const now = new Date();
-          const rescuedMeta = {
-            digestType: DIGEST_TYPE,
-            dateStr: now.toLocaleString('zh-CN', {
-              timeZone: 'Asia/Shanghai',
-              year: 'numeric', month: '2-digit', day: '2-digit',
-              hour: '2-digit', minute: '2-digit',
-            }),
-          };
-          pushedItems = await sendFeishuArticles(rescued, rescuedMeta, {
-            onItemSent: async (item) => {
-              if (pushDb) recordPushedItems(pushDb, [item], DIGEST_TYPE);
-            },
-          });
-        } else {
-          log('\n正在推送到飞书群机器人（纯文本模式）...');
-          await sendFeishuNotification(content);
-        }
+        log('\n正在推送到飞书群机器人（纯文本模式）...');
+        await sendFeishuNotification(content);
       }
     }
 

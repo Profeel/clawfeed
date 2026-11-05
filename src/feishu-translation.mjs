@@ -1,3 +1,5 @@
+import { normalizeOpenRouterAutoModel } from './openrouter-free.mjs';
+
 const ENGLISH_WORDS = new Set([
   'a', 'after', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'before', 'but', 'by',
   'can', 'for', 'from', 'has', 'have', 'in', 'into', 'is', 'it', 'its', 'more',
@@ -11,6 +13,10 @@ const ENGLISH_WORDS = new Set([
 const ALLOWED_LOWERCASE_NAMES = new Set([
   'ai', 'api', 'css', 'html', 'ios', 'javascript', 'llm', 'macos', 'npm',
   'openai', 'python', 'sdk', 'sql', 'typescript',
+  // 中文科技资讯中约定俗成保留英文的技术名词，避免门禁误杀
+  'agi', 'app', 'apps', 'asr', 'bot', 'bots', 'cli', 'cpu', 'docker', 'git',
+  'github', 'gpu', 'gpus', 'ide', 'java', 'linux', 'mcp', 'nlp', 'ocr',
+  'rag', 'rust', 'saas', 'token', 'tokens', 'tpu', 'tts', 'ui', 'ux', 'web',
 ]);
 
 const stripNonLanguageContent = (text) => String(text || '')
@@ -21,12 +27,8 @@ const stripNonLanguageContent = (text) => String(text || '')
 
 const chineseCharCount = (text) => (String(text || '').match(/[\u3400-\u9fff]/g) || []).length;
 
-const normalizeProviderModel = (baseUrl, model, fallbackModel) => {
-  const configuredModel = model || fallbackModel;
-  return /openrouter/i.test(baseUrl) && /^(?:auto|openrouter\/free-latest)$/i.test(configuredModel)
-    ? 'openrouter/free'
-    : configuredModel;
-};
+const normalizeProviderModel = (baseUrl, model, fallbackModel) =>
+  normalizeOpenRouterAutoModel(baseUrl, model || fallbackModel);
 
 export function resolveTranslationProvider({
   translateApiKey = '',
@@ -57,7 +59,7 @@ export function resolveTranslationProvider({
     return {
       apiKey: llmApiKey,
       baseUrl,
-      model: normalizeProviderModel(baseUrl, llmModel, /openrouter/i.test(baseUrl) ? 'openrouter/free' : siliconFlow.model),
+      model: normalizeProviderModel(baseUrl, llmModel, /openrouter/i.test(baseUrl) ? 'openrouter/free-latest' : siliconFlow.model),
       source: 'llm',
     };
   }
@@ -81,15 +83,22 @@ export function needsZhTranslation(text) {
   const latinLetters = (content.match(/[A-Za-z]/g) || []).length;
   if (chinese === 0) return true;
 
-  const words = content.match(/[A-Za-z][A-Za-z'-]*/g) || [];
-  const proseWords = words.filter((word) => ENGLISH_WORDS.has(word.toLowerCase())).length;
-  if (proseWords >= 1) return true;
-
-  const lowercaseProse = words.filter((word) =>
-    word === word.toLowerCase() && !ALLOWED_LOWERCASE_NAMES.has(word)
+  // 字母数字混合的品牌名（如 a16z、GPT-6）不应被拆出英文单词（a16z 会被拆成冠词 a 导致误判）
+  const words = content.match(/(?<![A-Za-z0-9])[A-Za-z][A-Za-z'-]*(?![0-9])/g) || [];
+  const proseWords = new Set(
+    words
+      .filter((word) => word !== word.toUpperCase() && ENGLISH_WORDS.has(word.toLowerCase()))
+      .map((word) => word.toLowerCase())
   );
-  if (lowercaseProse.length) return true;
-  if (words.length >= 3 && chinese < 4) return true;
+  if (proseWords.size >= 2 || (proseWords.size === 1 && chinese < 6)) return true;
+
+  const lowercaseProse = new Set(words.filter((word) =>
+    word === word.toLowerCase() && !ALLOWED_LOWERCASE_NAMES.has(word)
+  ));
+  if (lowercaseProse.size >= 2 || (lowercaseProse.size === 1 && chinese < 6)) return true;
+  // 中文标题常含多个大写产品名（如「OpenAI发布GPT-6 Sol与Luna」仅 3 个汉字），
+  // 只要无英文虚词/小写散文词且含少量汉字即视为中文文案
+  if (words.length >= 3 && chinese < 2) return true;
 
   return latinLetters >= 20 && chinese / (chinese + latinLetters) < 0.12;
 }
@@ -112,13 +121,97 @@ export function parseTranslatedItems(raw) {
   return null;
 }
 
-const isAcceptableChinese = (text, field) =>
-  chineseCharCount(text) >= (field === 'title' ? 2 : 6) && !needsZhTranslation(text);
+export function isGarbledChinese(text) {
+  const value = String(text || '');
+  if (/\uFFFD/.test(value)) return true;
+  if (/[\u3400-\u9fff](?:[ \t]+[\u3400-\u9fff]){3,}/.test(value)) return true;
+  if (/[\u3400-\u9fff][\u200b\u200c\u200d\ufeff\u2060]/.test(value)) return true;
+  return false;
+}
 
-const requiredFields = (item) => ({
-  title: needsZhTranslation(item.title),
-  summary: needsZhTranslation(item.summary),
-});
+const isAcceptableChinese = (text, field) =>
+  chineseCharCount(text) >= (field === 'title' ? 2 : 6)
+  && !needsZhTranslation(text)
+  && !isGarbledChinese(text);
+
+export const FEISHU_SOURCE_TEXT_MAX = 1800;
+
+export const FEISHU_CARD_PROMPT =
+  '你是资讯编辑，为飞书卡片写简体中文标题和简述。' +
+  '根据每条的 title、summary 和 sourceText（原文要点，通常更完整）做总结，不要把开头几句翻译或扩写成标题/简述。' +
+  'title：一句话点明整篇的核心事件，动宾结构；可保留公司名、产品名、人名等专有名词，但必须用中文动词概括在做什么。' +
+  'summary（简述）：2-3 句概括全文关键信息——谁做了什么、结果或影响是什么；禁止复述或翻译原文前几句，也不要只改写已有 summary。' +
+  '只写原文能支持的事实，禁止编造融资额、产品版本、排名、机构名或未出现的事件。' +
+  '汉字必须连续书写，禁止在汉字之间插入空格、符号或多余汉字。' +
+  '不要添加评论，不要翻译或改写 URL。必须保留每个 i，只输出 JSON 数组，格式：[{"i":0,"title":"...","summary":"..."}]';
+
+const cleanFeishuText = (value, max) => String(value || '')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/&amp;/g, '&')
+  .replace(/&#8217;/g, "'")
+  .replace(/&quot;/g, '"')
+  .replace(/&nbsp;/g, ' ')
+  .replace(/https?:\/\/\S+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, max);
+
+const rawItemBody = (item) => String(
+  item?.sourceText || item?.description || item?.content || item?.body || ''
+).trim();
+
+const itemSourceText = (item) => {
+  const body = rawItemBody(item);
+  const title = String(item?.title || '').trim();
+  if (title && body && !body.startsWith(title)) return `${title}\n${body}`;
+  return body || title;
+};
+
+export function prepareFeishuCardItem(item) {
+  return {
+    ...item,
+    title: cleanFeishuText(item?.title, 80),
+    summary: cleanFeishuText(item?.summary, 400),
+    sourceText: cleanFeishuText(itemSourceText(item), FEISHU_SOURCE_TEXT_MAX),
+  };
+}
+
+export function normalizeFeishuItemUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    return `${parsed.hostname}${parsed.pathname}`.replace(/\/+$/, '').toLowerCase();
+  } catch {
+    return String(url || '').trim().toLowerCase();
+  }
+}
+
+export function attachFeishuSourceText(items, rawItems = []) {
+  const byUrl = new Map();
+  for (const raw of rawItems) {
+    const key = normalizeFeishuItemUrl(raw?.url);
+    if (!key) continue;
+    const text = itemSourceText(raw).trim();
+    if (!text) continue;
+    const existing = byUrl.get(key) || '';
+    if (text.length > existing.length) byUrl.set(key, text);
+  }
+
+  return (items || []).map((item) => {
+    const fromRaw = byUrl.get(normalizeFeishuItemUrl(item?.url)) || '';
+    const fallback = String(item?.sourceText || item?.description || item?.content || '').trim();
+    const sourceText = fromRaw.length >= fallback.length ? fromRaw : fallback;
+    return { ...item, sourceText };
+  });
+}
+
+const requiredFields = (item, rewriteAll = false) => (
+  rewriteAll
+    ? { title: true, summary: true }
+    : {
+      title: needsZhTranslation(item.title),
+      summary: needsZhTranslation(item.summary),
+    }
+);
 
 const unresolvedFields = (completed, requirements) => {
   const unresolved = [];
@@ -135,8 +228,9 @@ export async function translateFeishuItems(items, {
   requestTranslation,
   attempts = 3,
   onRetry = () => {},
+  rewriteAll = false,
 } = {}) {
-  const requirements = items.map(requiredFields);
+  const requirements = items.map((item) => requiredFields(item, rewriteAll));
   if (!requirements.some((fields) => fields.title || fields.summary)) return items;
   if (!apiKey) throw new Error('飞书中文翻译未配置 API Key，已阻止英文推送');
   if (typeof requestTranslation !== 'function') throw new Error('飞书中文翻译服务不可用，已阻止英文推送');
@@ -157,6 +251,7 @@ export async function translateFeishuItems(items, {
       i,
       title: translatedItems[i].title || '',
       summary: translatedItems[i].summary || '',
+      sourceText: translatedItems[i].sourceText || '',
     }));
 
     try {
@@ -189,10 +284,49 @@ export async function translateFeishuItems(items, {
     if (attempt < attempts) await onRetry({ attempt, remaining, error: lastError });
   }
 
-  const remaining = unresolvedFields(completed, requirements);
+  const remaining = unresolvedFields(completed, requirements).filter(({ i, field }) => {
+    const original = String(items[i]?.[field] || '').trim();
+    if (isAcceptableChinese(original, field)) {
+      translatedItems[i][field] = translatedItems[i][field] || original;
+      completed[i][field] = true;
+      return false;
+    }
+    return true;
+  });
+  if (!remaining.length) return translatedItems;
   const detail = remaining.map(({ i, field }) => `${i + 1}.${field}`).join(', ');
   const cause = lastError?.message ? `：${lastError.message}` : '';
   throw new Error(`飞书中文翻译未完成（${detail}）${cause}，已阻止英文推送`);
+}
+
+const FEISHU_WEBHOOK_HOSTS = new Set([
+  'open.feishu.cn',
+  'www.feishu.cn',
+  'open.larksuite.com',
+  'open.larkoffice.com',
+]);
+
+export function isFeishuWebhookUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    return parsed.protocol === 'https:'
+      && FEISHU_WEBHOOK_HOSTS.has(parsed.hostname)
+      && /\/open-apis\/bot\/v2\/hook\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function maskFeishuWebhookUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    const token = parsed.pathname.split('/').pop() || '';
+    const visible = token.slice(-4);
+    parsed.pathname = parsed.pathname.replace(/[^/]+$/, `****${visible}`);
+    return parsed.toString();
+  } catch {
+    return '';
+  }
 }
 
 export async function translateFeishuText(text, {
